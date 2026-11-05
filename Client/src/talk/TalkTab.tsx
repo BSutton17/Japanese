@@ -77,6 +77,10 @@ export function TalkTab() {
 
         {state?.error && <p className="error" role="alert">{state.error}</p>}
 
+        {active && state?.echoDetected && (
+          <p className="fine-print">Yuki was hearing herself through your speakers, so your mic now pauses while she talks. Wait for her to finish before you answer.</p>
+        )}
+
         {active ? (
           <button className="primary" onClick={() => void engine.current?.stop()}>End session</button>
         ) : (
@@ -131,6 +135,7 @@ export function TalkTab() {
           <dl>
             <div><dt>Microphone</dt><dd>{state.diagnostics.mic}</dd></div>
             <div><dt>Mic audio</dt><dd>{state.diagnostics.micDetails}</dd></div>
+            <div><dt>Echo protection</dt><dd>{state.diagnostics.echoProtection}</dd></div>
             <div><dt>Audio</dt><dd>{state.diagnostics.audio}</dd></div>
             <div><dt>Screen stays on</dt><dd>{state.diagnostics.wakeLock}</dd></div>
             <div><dt>Connections</dt><dd>{state.diagnostics.connections}</dd></div>

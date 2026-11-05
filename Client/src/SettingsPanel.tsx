@@ -174,8 +174,8 @@ export function SettingsPanel({ onClose }: { onClose(): void }) {
         onChange={(offerTopics) => change({ offerTopics })}
       />
       <ToggleRow
-        title="Noisy room"
-        note="Mutes your mic while Yuki speaks, so a TV can't interrupt her. You can't interrupt her either."
+        title="Car or speakers"
+        note="Always pauses your mic while Yuki talks, so her voice or a TV can't set her off. You can't interrupt her. If this is off, the app turns it on by itself when it notices an echo."
         checked={settings.noisyRoom}
         onChange={(noisyRoom) => change({ noisyRoom })}
       />

@@ -2,7 +2,7 @@ export interface Settings {
   readAloud: boolean;
   /** Yuki offers something to talk about after a long silence. */
   offerTopics: boolean;
-  /** Mutes the microphone while Yuki speaks, so a TV or game can't interrupt her. */
+  /** The "Car or speakers" setting: holds the microphone while Yuki speaks, so she can't hear herself or a TV. */
   noisyRoom: boolean;
 }
 

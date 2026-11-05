@@ -1,6 +1,7 @@
 import { api, ApiError, localDate, type AiPlan, type TalkTurn, type TalkUsage } from "../api";
 import { getSettings } from "../settings";
 import { AudioPlayer, MicCapture, bytesToBase64 } from "./audio";
+import { EchoDetector, soundsLikeHer } from "./echo";
 
 export type TalkStatus = "idle" | "starting" | "connecting" | "listening" | "speaking" | "reconnecting" | "ended" | "error";
 
@@ -14,6 +15,7 @@ export interface TalkDiagnostics {
   tokens: number;
   installed: boolean;
   plan: string;
+  echoProtection: string;
 }
 
 export interface TalkState {
@@ -24,6 +26,8 @@ export interface TalkState {
   error?: string;
   /** The line being replayed right now. */
   replayingId?: number;
+  /** The app noticed she was hearing herself through the speakers, and is holding the mic while she talks. */
+  echoDetected: boolean;
   diagnostics: TalkDiagnostics;
 }
 
@@ -67,6 +71,12 @@ const CONTEXT_REFRESH_TOKENS = 5000;
 const CONNECT_TIMEOUT_MS = 15_000;
 // How long a silence lasts before Yuki offers something to talk about. Then she leaves them be.
 const QUIET_NUDGES_MS = [20_000, 60_000];
+// Speakers and Bluetooth lag behind the app, and cars reverberate, so her voice can still reach the
+// microphone for a moment after the app has finished playing it.
+const ECHO_TAIL_MS = 800;
+// She can't be interrupted this soon after starting unless it's her own voice, or close to it.
+const INSTANT_INTERRUPTION_MS = 3000;
+const HER_RECENT_LINES = 3;
 // Her audio is about 50 KB a second, so only her most recent lines can be replayed.
 const MAX_RECORDINGS = 40;
 // The server's answer when a plan isn't set up or is over its limit, which retrying can't fix.
@@ -94,7 +104,8 @@ export class TalkEngine {
     turns: [],
     micLevel: 0,
     seconds: 0,
-    diagnostics: { mic: "off", micDetails: "off", audio: "off", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp(), plan: "not started" },
+    echoDetected: false,
+    diagnostics: { mic: "off", micDetails: "off", audio: "off", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp(), plan: "not started", echoProtection: "off" },
   };
   private context?: AudioContext;
   private mic?: MicCapture;
@@ -126,6 +137,11 @@ export class TalkEngine {
   private replayPlayer?: AudioPlayer;
   /** After a conversation ends its audio is shut down, so replays need their own. */
   private replayContext?: AudioContext;
+  private echo = new EchoDetector();
+  private micHeldUntil = 0;
+  private lineStartedAt = 0;
+  /** So each line heard from the microphone only counts as suspicious once. */
+  private echoCheckedLines = 0;
 
   constructor(private readonly onChange: (state: TalkState) => void) {}
 
@@ -156,13 +172,18 @@ export class TalkEngine {
     this.recordings.clear();
     this.recordingId = undefined;
     this.turnEnded = false;
+    this.echo = new EchoDetector();
+    this.micHeldUntil = 0;
+    this.lineStartedAt = 0;
+    this.echoCheckedLines = 0;
     this.update({
       status: "starting",
+      echoDetected: false,
       turns: [],
       seconds: 0,
       micLevel: 0,
       error: undefined,
-      diagnostics: { mic: "starting", micDetails: "off", audio: "starting", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp(), plan: "starting" },
+      diagnostics: { mic: "starting", micDetails: "off", audio: "starting", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp(), plan: "starting", echoProtection: "off" },
     });
 
     const context = new AudioContext();
@@ -187,6 +208,7 @@ export class TalkEngine {
     this.clock = setInterval(() => {
       this.update({ seconds: Math.round((Date.now() - this.startedAt.getTime()) / 1000) });
       this.offerTopicIfQuiet();
+      this.showEchoProtection();
     }, 1000);
     this.saver = setInterval(() => void this.save(), SAVE_EVERY_MS);
 
@@ -293,9 +315,11 @@ export class TalkEngine {
     const level = Math.max(peak, this.state.micLevel * 0.8);
     if (Math.abs(level - this.state.micLevel) > 0.02) this.update({ micLevel: level });
     if (!this.session || this.leavingConnection) return;
+    // A replay always holds the mic, or she'd hear herself and answer.
+    const holdingForHer = (getSettings().noisyRoom || this.state.echoDetected) && this.player?.isPlaying;
+    if (this.replayPlayer || holdingForHer) this.micHeldUntil = Date.now() + ECHO_TAIL_MS;
     // Silence rather than nothing, so Gemini's speech detection keeps seeing a steady stream.
-    // A replay is always muted, or she'd hear herself and answer.
-    const muted = this.replayPlayer !== undefined || (getSettings().noisyRoom && this.player?.isPlaying);
+    const muted = Date.now() < this.micHeldUntil;
     try {
       this.session.sendRealtimeInput({ audio: { data: bytesToBase64(muted ? new ArrayBuffer(pcm.byteLength) : pcm), mimeType: "audio/pcm;rate=16000" } });
     } catch {
@@ -315,6 +339,33 @@ export class TalkEngine {
       this.session.sendRealtimeInput({ text: this.quietPrompt });
     } catch {
       // The connection just dropped, and its close event starts the reconnect.
+    }
+  }
+
+  private showEchoProtection(): void {
+    const label = getSettings().noisyRoom ? "on" : this.state.echoDetected ? "on (automatic)" : "off";
+    if (label !== this.state.diagnostics.echoProtection) this.diagnose({ echoProtection: label });
+  }
+
+  /** Called with each sign she might be hearing herself. Two close together turn on the mic hold. */
+  private suspectEcho(): void {
+    if (this.state.echoDetected || getSettings().noisyRoom) return;
+    if (this.echo.suspect()) {
+      this.update({ echoDetected: true });
+      this.showEchoProtection();
+    }
+  }
+
+  /** Words arriving from the microphone while she's talking, that match her own words, are her echo. */
+  private checkHeardForEcho(): void {
+    if (!this.player?.isPlaying) return;
+    const { turns } = this.state;
+    const heard = turns.at(-1);
+    if (heard?.role !== "learner" || turns.length === this.echoCheckedLines) return;
+    const herLines = turns.filter((turn) => turn.role === "tutor").slice(-HER_RECENT_LINES).map((turn) => turn.text);
+    if (soundsLikeHer(heard.text, herLines)) {
+      this.echoCheckedLines = turns.length;
+      this.suspectEcho();
     }
   }
 
@@ -392,12 +443,14 @@ export class TalkEngine {
     if (!content) return;
 
     if (content.interrupted) {
+      if (this.player?.isPlaying && Date.now() - this.lineStartedAt < INSTANT_INTERRUPTION_MS) this.suspectEcho();
       this.player?.stop();
       this.finishLine();
       this.update({ status: "listening" });
     }
     if (content.inputTranscription?.text) {
       this.addTranscript("learner", content.inputTranscription.text);
+      this.checkHeardForEcho();
       this.lastActivityAt = Date.now();
       this.quietNudges = 0;
     }
@@ -406,6 +459,7 @@ export class TalkEngine {
     for (const part of content.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
         this.stopReplay();
+        if (this.recordingId === undefined || !this.player?.isPlaying) this.lineStartedAt = Date.now();
         this.recordings.get(this.currentRecording())?.push(part.inlineData.data);
         this.player?.play(part.inlineData.data);
         this.lastActivityAt = Date.now();
