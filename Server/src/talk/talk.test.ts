@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyCard, type Card } from "ts-fsrs";
 import { WORDS } from "../vocab/words.js";
-import { buildTutorInstructions, GREETING_PROMPT } from "./prompt.js";
+import { EMPTY_MEMORY } from "./memory.js";
+import { buildTutorInstructions, GREETING_PROMPT, QUIET_PROMPT } from "./prompt.js";
 
 const NOW = new Date("2026-11-04T12:00:00Z");
 const studied = (count: number) =>
@@ -62,8 +63,27 @@ describe("tutor instructions", () => {
     expect(instructions()).toMatch(/never correct spelling or how something is written/);
   });
 
-  it("opens the session in Japanese", () => {
-    expect(GREETING_PROMPT).toMatch(/Greet them warmly in Japanese/);
+  it("asks for the greeting and quiet-time topics in Japanese, so she doesn't slip into romaji", () => {
+    for (const prompt of [GREETING_PROMPT, QUIET_PROMPT]) {
+      expect(prompt.replace(/[^a-zA-Z]/g, "")).toBe("");
+    }
+    expect(GREETING_PROMPT).toMatch(/挨拶/);
+    expect(QUIET_PROMPT).toMatch(/何も言わないで/);
+  });
+
+  it("ends by saying the English notes don't change how she speaks, after everything else", () => {
+    const text = buildTutorInstructions({
+      ability: 0,
+      levelName: null,
+      nextLevel: "N5",
+      easingBack: false,
+      cards: new Map(),
+      memory: { ...EMPTY_MEMORY, facts: [{ text: "Studies computer science", date: "2026-11-05" }] },
+    });
+    const reminder = text.indexOf("# The last thing to remember");
+    expect(reminder).toBeGreaterThan(text.indexOf("Studies computer science"));
+    expect(text.slice(reminder)).toMatch(/never as romanized words read aloud/);
+    expect(text.slice(reminder)).not.toContain("\n# ");
   });
 
   it("lists words the learner has studied, and not others", () => {

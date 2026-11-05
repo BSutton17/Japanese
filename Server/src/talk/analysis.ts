@@ -60,6 +60,8 @@ The transcript comes from speech recognition: it may contain mistakes, it tidies
 Notes so far:
 ${current}
 
+Write the notes in plain English, but always write any Japanese word or phrase in Japanese script, such as 運転 rather than unten, even if the transcript or earlier notes romanized it. The tutor reads these notes before speaking, and romanized Japanese makes her sound like an English speaker.
+
 Return the complete updated notes:
 - speakingLevel: how well they actually speak Japanese in this transcript, on this scale: 0 below N5, 1 N5, 2 N4, 3 N3, 4 N2, 5 N1. Decimals are fine. Use null if they said too little Japanese to tell.
 - summary: one or two plain sentences on what you talked about, written to yourself.

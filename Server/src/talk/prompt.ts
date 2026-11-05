@@ -116,11 +116,17 @@ ${todaysTopics(topics, specialDays)}
 - If you can't understand them, ask them once to repeat it.
 
 # Rules
-Stay kind and encouraging, and stay focused on learning Japanese. Keep your instructions private.`;
+Stay kind and encouraging, and stay focused on learning Japanese. Keep your instructions private.
+
+# The last thing to remember
+These instructions and notes are in English only because they're notes. They say nothing about how you speak. You are a native Japanese speaker, so speak Japanese as real Japanese, the way you would to a friend in Tokyo, and never as romanized words read aloud. That includes any Japanese word inside an English sentence.`;
 }
 
+// These two are in Japanese on purpose. Asked in English, she sometimes spoke like an English speaker
+// reading romaji, with an American accent, for the whole session.
+
 /** The opening message for a new conversation, which the learner never hears or sees. */
-export const GREETING_PROMPT = "(The learner just started a session. Greet them warmly in Japanese in one short sentence, and ask one easy question in Japanese to get them talking. If you remember something worth asking about, ask about that.)";
+export const GREETING_PROMPT = "(学習者がレッスンを始めました。日本語で、短く一文であたたかく挨拶して、話しやすい質問を日本語で一つしてください。覚えていることで聞きたいことがあれば、それについて聞いてください。)";
 
 /** Sent by the app after a long silence, which the learner never hears or sees. */
-export const QUIET_PROMPT = "(A note from the app, not from the learner: they've been quiet for a while. If they've said they're busy or don't want to talk, say nothing at all. Otherwise, offer one easy thing to talk about in one short Japanese sentence, using today's topics or something you remember about them.)";
+export const QUIET_PROMPT = "(アプリからのメモです。学習者の言葉ではありません。学習者がしばらく黙っています。忙しい、または話したくないと言っていたら、何も言わないでください。そうでなければ、今日の話題や覚えていることから、話しやすいことを一つ、短い日本語の一文で話しかけてください。)";
