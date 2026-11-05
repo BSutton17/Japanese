@@ -33,6 +33,14 @@ describe("tutor instructions", () => {
     }
   });
 
+  it("answers English questions in English, even after a sentence that started in Japanese", () => {
+    const text = instructions();
+    expect(text).toMatch(/Answer in English\. The only Japanese in your answer is what they asked for/);
+    expect(text).toMatch(/start in Japanese and finish with a question in English, answer in English/);
+    expect(text).toMatch(/Don't add a Japanese reaction before it, or a Japanese question or translation after it/);
+    expect(text).not.toMatch(/then go back to Japanese\./);
+  });
+
   it("makes her Japanese harder as the level rises", () => {
     expect(instructions({ ability: 0.2 })).toMatch(/very short, simple Japanese/);
     expect(instructions({ ability: 1.5, levelName: "N5", nextLevel: "N4" })).toMatch(/common N5 words/);
