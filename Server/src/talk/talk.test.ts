@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyCard, type Card } from "ts-fsrs";
 import { WORDS } from "../vocab/words.js";
-import { buildTutorInstructions } from "./prompt.js";
+import { buildTutorInstructions, GREETING_PROMPT } from "./prompt.js";
 
 const NOW = new Date("2026-11-04T12:00:00Z");
 const studied = (count: number) =>
@@ -23,16 +23,35 @@ describe("tutor instructions", () => {
     expect(instructions()).toMatch(/Never reply in any other language/);
   });
 
-  it("uses mostly English for a beginner and mostly Japanese later", () => {
-    expect(instructions({ ability: 0.2 })).toMatch(/Speak mostly English/);
-    expect(instructions({ ability: 1.5, levelName: "N5", nextLevel: "N4" })).toMatch(/roughly half and half/);
-    expect(instructions({ ability: 2.5, levelName: "N4", nextLevel: "N3" })).toMatch(/mostly simple Japanese/);
-    expect(instructions({ ability: 3.5, levelName: "N3", nextLevel: "N2" })).toMatch(/Speak Japanese, and use English only/);
+  it("converses in Japanese at every level, keeping English for teaching, correcting, and asking", () => {
+    for (const ability of [0, 1.5, 2.5, 3.5]) {
+      const text = instructions({ ability });
+      expect(text).toMatch(/Reply in Japanese by default/);
+      expect(text).toMatch(/never answer Japanese with an English reply/);
+      expect(text).toMatch(/Use English ONLY to teach a new word or grammar point, to correct a mistake/);
+      expect(text).not.toMatch(/Speak mostly English/);
+    }
   });
 
-  it("states the learner's level", () => {
+  it("makes her Japanese harder as the level rises", () => {
+    expect(instructions({ ability: 0.2 })).toMatch(/very short, simple Japanese/);
+    expect(instructions({ ability: 1.5, levelName: "N5", nextLevel: "N4" })).toMatch(/common N5 words/);
+    expect(instructions({ ability: 2.5, levelName: "N4", nextLevel: "N3" })).toMatch(/N4 words and grammar/);
+    expect(instructions({ ability: 3.5, levelName: "N3", nextLevel: "N2" })).toMatch(/as you would with a Japanese friend/);
+  });
+
+  it("states the learner's level, but trusts how they really speak over it", () => {
     expect(instructions()).toMatch(/about below N5/);
     expect(instructions({ ability: 2.5, levelName: "N4", nextLevel: "N3" })).toMatch(/about N4, working toward N3/);
+    expect(instructions()).toMatch(/if they speak in full Japanese sentences, match that level right away/);
+  });
+
+  it("doesn't correct spelling, since nothing is written", () => {
+    expect(instructions()).toMatch(/never correct spelling or how something is written/);
+  });
+
+  it("opens the session in Japanese", () => {
+    expect(GREETING_PROMPT).toMatch(/Greet them warmly in Japanese/);
   });
 
   it("lists words the learner has studied, and not others", () => {
