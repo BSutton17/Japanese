@@ -6,7 +6,10 @@ import type { KanaReview, KanaStore } from "./kana/store.js";
 import type { DayActivity } from "./progress/progress.js";
 import { mergeActivity, type ProgressStore } from "./progress/store.js";
 import type { LiveTokenRequest } from "./talk/live.js";
-import type { TalkSession } from "./talk/store.js";
+import { EMPTY_MEMORY, type ConversationAnalysis, type TutorMemory } from "./talk/memory.js";
+import type { AiPlan } from "./talk/plan.js";
+import type { TalkSession, TalkStore } from "./talk/store.js";
+import type { DailyTopic } from "./talk/topics.js";
 import type { VocabReview, VocabStore } from "./vocab/store.js";
 import { WORDS } from "./vocab/words.js";
 
@@ -59,12 +62,62 @@ function setup() {
   const fake = fakeStore();
   const vocab = fakeVocabStore();
   const progress = fakeProgressStore();
-  const talk = { saved: [] as TalkSession[], tokenRequests: [] as LiveTokenRequest[], failToken: false };
+  const talk = {
+    saved: [] as TalkSession[],
+    tokenRequests: [] as LiveTokenRequest[],
+    failToken: false,
+    plan: null as AiPlan | null,
+    available: { free: true, paid: true } as Record<AiPlan, boolean>,
+    memory: EMPTY_MEMORY as TutorMemory,
+    pending: [] as TalkSession[],
+    learned: [] as string[],
+    allLearned: false,
+    analysisPlans: [] as AiPlan[],
+    analysis: { speakingLevel: 2, summary: "Talked about movies.", facts: ["Likes movies"], struggles: [], topics: ["movies"], followUps: [] } as ConversationAnalysis,
+    failAnalysis: false,
+    topics: new Map<string, DailyTopic[]>(),
+    topicRequests: 0,
+    failTopics: false,
+    spentUsage: { textIn: 0, audioIn: 0, textOut: 0, audioOut: 0 },
+  };
+  const talkStore: TalkStore = {
+    saveSession: async (session) => void talk.saved.push(session),
+    pendingSessions: async () => talk.pending.filter((session) => !talk.learned.includes(session.id)),
+    markLearned: async (ids) => void talk.learned.push(...ids),
+    markAllLearned: async () => {
+      talk.allLearned = true;
+    },
+    monthUsage: async () => ({ usage: talk.spentUsage, seconds: 600 }),
+    getPlan: async () => talk.plan,
+    savePlan: async (plan) => {
+      talk.plan = plan;
+    },
+    getMemory: async () => talk.memory,
+    saveMemory: async (memory) => {
+      talk.memory = memory;
+    },
+    clearMemory: async () => {
+      talk.memory = EMPTY_MEMORY;
+    },
+    getTopics: async (date) => talk.topics.get(date) ?? null,
+    saveTopics: async (date, topics) => void talk.topics.set(date, [...topics]),
+  };
   const app = createApp({
     kanaStore: fake.store,
     vocabStore: vocab.store,
     progressStore: progress.store,
-    talkStore: { saveSession: async (session) => void talk.saved.push(session) },
+    talkStore,
+    availablePlans: () => talk.available,
+    analyzeConversation: async ({ plan }) => {
+      talk.analysisPlans.push(plan);
+      if (talk.failAnalysis) throw new Error("analysis failed");
+      return talk.analysis;
+    },
+    chooseDailyTopics: async () => {
+      talk.topicRequests += 1;
+      if (talk.failTopics) throw new Error("feeds down");
+      return [{ title: "Happy otters", summary: "Otters held hands.", source: "BBC", url: "https://example.com/otters" }];
+    },
     createLiveToken: async (request) => {
       talk.tokenRequests.push(request);
       if (talk.failToken) throw new Error("no key");
@@ -419,6 +472,217 @@ describe("talk routes", () => {
       body: JSON.stringify({ ...session, turns: [{ role: "learner", text: "あ".repeat(9000) }] }),
     });
     expect(talk.saved[0]?.turns[0]?.text).toHaveLength(5000);
+  });
+
+  it("save which plan a conversation used, and reject bad usage", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const put = (body: unknown) =>
+      app.request("/api/talk/sessions/session-12345", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Cookie },
+        body: JSON.stringify(body),
+      });
+    const usage = { textIn: 100, audioIn: 50, textOut: 10, audioOut: 20 };
+    expect((await put({ ...session, plan: "paid", usage })).status).toBe(200);
+    expect(talk.saved[0]).toMatchObject({ plan: "paid", usage });
+    expect((await put({ ...session, plan: "gold" })).status).toBe(400);
+    expect((await put({ ...session, usage: { ...usage, textIn: -1 } })).status).toBe(400);
+  });
+});
+
+describe("AI plan", () => {
+  it("starts on paid when it's set up, and on free when it isn't", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const plan = async () => (await (await app.request("/api/talk/plan", { headers: { Cookie } })).json()) as { plan: string };
+    expect((await plan()).plan).toBe("paid");
+    talk.available = { free: true, paid: false };
+    expect((await plan()).plan).toBe("free");
+  });
+
+  it("uses the choice from Settings for a new conversation", async () => {
+    const { app, post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const response = await app.request("/api/talk/plan", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Cookie },
+      body: JSON.stringify({ plan: "free" }),
+    });
+    expect(response.status).toBe(200);
+    const token = (await (await post("/talk/token", {}, Cookie)).json()) as { plan: string };
+    expect(token.plan).toBe("free");
+    expect(talk.tokenRequests[0]?.plan).toBe("free");
+  });
+
+  it("keeps a reconnect on the plan its conversation started on", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.plan = "free";
+    await post("/talk/token", { handle: "resume-me", plan: "paid" }, Cookie);
+    expect(talk.tokenRequests[0]?.plan).toBe("paid");
+  });
+
+  it("never falls back to the other plan when the chosen one isn't set up", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.plan = "paid";
+    talk.available = { free: true, paid: false };
+    const response = await post("/talk/token", {}, Cookie);
+    expect(response.status).toBe(409);
+    expect(await response.text()).toMatch(/paid AI isn't set up/);
+    expect(talk.tokenRequests).toHaveLength(0);
+  });
+
+  it("refuses to choose a plan that isn't set up, or one that doesn't exist", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.available = { free: false, paid: true };
+    const put = (plan: string) =>
+      app.request("/api/talk/plan", { method: "PUT", headers: { "Content-Type": "application/json", Cookie }, body: JSON.stringify({ plan }) });
+    expect((await put("free")).status).toBe(409);
+    expect((await put("gold")).status).toBe(400);
+    expect(talk.plan).toBeNull();
+  });
+
+  it("reports this month's estimated spending", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.spentUsage = { textIn: 0, audioIn: 1_000_000, textOut: 0, audioOut: 0 };
+    const report = (await (await app.request("/api/talk/plan?today=2026-11-05", { headers: { Cookie } })).json()) as { month: unknown };
+    expect(report.month).toEqual({ spent: 3, minutes: 10, budget: 15 });
+  });
+
+  it("stops new paid conversations at the monthly limit, but not reconnects or free ones", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.spentUsage = { textIn: 0, audioIn: 5_000_000, textOut: 0, audioOut: 0 };
+    const stopped = await post("/talk/token", {}, Cookie);
+    expect(stopped.status).toBe(409);
+    expect(await stopped.text()).toMatch(/\$15 paid limit/);
+    expect((await post("/talk/token", { plan: "paid", handle: "resume-me" }, Cookie)).status).toBe(200);
+    talk.plan = "free";
+    expect((await post("/talk/token", {}, Cookie)).status).toBe(200);
+  });
+});
+
+describe("tutor memory", () => {
+  const conversation = (id: string, learnerTurns: number, plan?: AiPlan): TalkSession => ({
+    id,
+    localDate: "2026-11-04",
+    startedAt: new Date("2026-11-04T12:00:00Z"),
+    updatedAt: new Date("2026-11-04T12:10:00Z"),
+    seconds: 600,
+    tokens: 100,
+    turns: Array.from({ length: learnerTurns }, () => ({ role: "learner" as const, text: "映画を見ました" })),
+    ...(plan ? { plan } : {}),
+  });
+
+  it("learns from a finished conversation and uses it next time", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.pending = [conversation("session-12345", 4, "paid")];
+    await post("/talk/prepare", { today: "2026-11-05", finished: "session-12345" }, Cookie);
+    expect(talk.memory.facts.map((note) => note.text)).toEqual(["Likes movies"]);
+    expect(talk.memory.speakingAbility).toBe(2);
+    expect(talk.learned).toEqual(["session-12345"]);
+
+    await post("/talk/token", { today: "2026-11-05" }, Cookie);
+    const instructions = talk.tokenRequests[0]?.instructions;
+    expect(instructions).toMatch(/Likes movies/);
+    expect(instructions).toMatch(/they've spoken at about N4/);
+  });
+
+  it("doesn't spend anything on a conversation too short to learn from", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.pending = [conversation("session-12345", 1, "paid")];
+    await post("/talk/prepare", {}, Cookie);
+    expect(talk.analysisPlans).toHaveLength(0);
+    expect(talk.learned).toEqual(["session-12345"]);
+  });
+
+  it("reads a conversation only with the plan it was held on", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.plan = "free";
+    talk.pending = [conversation("session-12345", 4, "paid")];
+    await post("/talk/prepare", {}, Cookie);
+    expect(talk.analysisPlans).toEqual(["paid"]);
+  });
+
+  it("leaves a conversation waiting when its plan isn't available", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.available = { free: true, paid: false };
+    talk.pending = [conversation("session-12345", 4, "paid")];
+    await post("/talk/prepare", {}, Cookie);
+    expect(talk.analysisPlans).toHaveLength(0);
+    expect(talk.learned).toHaveLength(0);
+  });
+
+  it("tries again later when learning fails, without failing the request", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.failAnalysis = true;
+    talk.pending = [conversation("session-12345", 4, "paid")];
+    expect((await post("/talk/prepare", {}, Cookie)).status).toBe(200);
+    expect(talk.learned).toHaveLength(0);
+    talk.failAnalysis = false;
+    await post("/talk/prepare", {}, Cookie);
+    expect(talk.learned).toEqual(["session-12345"]);
+  });
+
+  it("shows what she remembers, and forgets it on request", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.memory = { ...EMPTY_MEMORY, speakingAbility: 2.4, facts: [{ text: "Likes movies", date: "2026-11-04" }] };
+    const shown = (await (await app.request("/api/talk/memory", { headers: { Cookie } })).json()) as { speakingLevel: string; facts: unknown[] };
+    expect(shown.speakingLevel).toBe("N4");
+    expect(shown.facts).toHaveLength(1);
+
+    const forgotten = await app.request("/api/talk/memory", { method: "DELETE", headers: { Cookie } });
+    expect(forgotten.status).toBe(200);
+    expect(talk.memory).toEqual(EMPTY_MEMORY);
+    expect(talk.allLearned).toBe(true);
+  });
+
+  it("requires a session", async () => {
+    const { app, post } = setup();
+    expect((await post("/talk/prepare", {})).status).toBe(401);
+    expect((await app.request("/api/talk/memory")).status).toBe(401);
+    expect((await app.request("/api/talk/memory", { method: "DELETE" })).status).toBe(401);
+    expect((await app.request("/api/talk/plan")).status).toBe(401);
+  });
+});
+
+describe("daily topics", () => {
+  it("fetches once a day and offers them to the tutor", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    await post("/talk/prepare", { today: "2026-11-05" }, Cookie);
+    await post("/talk/prepare", { today: "2026-11-05" }, Cookie);
+    expect(talk.topicRequests).toBe(1);
+    await post("/talk/token", { today: "2026-11-05" }, Cookie);
+    expect(talk.tokenRequests[0]?.instructions).toMatch(/Happy otters: Otters held hands\./);
+  });
+
+  it("tries again later if the news can't be read, and still starts the conversation", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.failTopics = true;
+    expect((await post("/talk/prepare", { today: "2026-11-05" }, Cookie)).status).toBe(200);
+    expect((await post("/talk/token", { today: "2026-11-05" }, Cookie)).status).toBe(200);
+    talk.failTopics = false;
+    await post("/talk/prepare", { today: "2026-11-05" }, Cookie);
+    expect(talk.topics.get("2026-11-05")).toHaveLength(1);
+  });
+
+  it("includes today's holiday without any news at all", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    await post("/talk/token", { today: "2026-11-03" }, Cookie);
+    expect(talk.tokenRequests[0]?.instructions).toMatch(/Today is Culture Day in Japan/);
   });
 });
 

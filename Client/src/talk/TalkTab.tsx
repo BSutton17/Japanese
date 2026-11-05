@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { api } from "../api";
 import { TalkEngine, type TalkState, type TalkStatus } from "./TalkEngine";
 
 const STATUS_TEXT: Record<TalkStatus, string> = {
@@ -25,6 +26,10 @@ export function TalkTab() {
 
   if (!engine.current) engine.current = new TalkEngine(setState);
   useEffect(() => () => void engine.current?.stop(), []);
+  // Done when the app opens, so today's topics and her notes are ready before a conversation starts.
+  useEffect(() => {
+    api.prepareTalk().catch(() => {});
+  }, []);
 
   const status = state?.status ?? "idle";
   const active = ACTIVE.includes(status);
@@ -100,6 +105,7 @@ export function TalkTab() {
             <div><dt>Screen stays on</dt><dd>{state.diagnostics.wakeLock}</dd></div>
             <div><dt>Connections</dt><dd>{state.diagnostics.connections}</dd></div>
             <div><dt>Unexpected drops</dt><dd>{state.diagnostics.drops}</dd></div>
+            <div><dt>AI plan</dt><dd>{state.diagnostics.plan}</dd></div>
             <div><dt>Tokens used</dt><dd>{state.diagnostics.tokens.toLocaleString()}</dd></div>
             <div><dt>Running as</dt><dd>{state.diagnostics.installed ? "Installed app" : "Browser"}</dd></div>
           </dl>

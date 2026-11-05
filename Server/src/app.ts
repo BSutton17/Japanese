@@ -15,9 +15,13 @@ import type { KanaStore } from "./kana/store.js";
 import { buildCalendar, buildProgress, computeStreak, describeAbility } from "./progress/progress.js";
 import type { ProgressStore } from "./progress/store.js";
 import { applyReview } from "./srs.js";
+import type { AnalysisRequest } from "./talk/analysis.js";
 import type { LiveToken, LiveTokenRequest } from "./talk/live.js";
-import { GREETING_PROMPT, buildTutorInstructions } from "./talk/prompt.js";
+import { mergeAnalysis, speakingLevelName, type ConversationAnalysis } from "./talk/memory.js";
+import { MONTHLY_BUDGET_USD, NO_USAGE, isPlan, usageCost, type AiPlan, type TalkUsage } from "./talk/plan.js";
+import { GREETING_PROMPT, QUIET_PROMPT, buildTutorInstructions } from "./talk/prompt.js";
 import type { TalkStore, TalkTurn } from "./talk/store.js";
+import { specialDaysOn, type DailyTopic, type TopicRequest } from "./talk/topics.js";
 import { WORDS_BY_ID, buildSession as buildVocabSession, buildSummary as buildVocabSummary } from "./vocab/session.js";
 import type { VocabStore } from "./vocab/store.js";
 
@@ -28,6 +32,9 @@ export interface AppDeps {
   progressStore: ProgressStore;
   talkStore: TalkStore;
   createLiveToken(request: LiveTokenRequest): Promise<LiveToken>;
+  availablePlans(): Record<AiPlan, boolean>;
+  analyzeConversation(request: AnalysisRequest): Promise<ConversationAnalysis>;
+  chooseDailyTopics(request: TopicRequest): Promise<DailyTopic[]>;
 }
 
 const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -35,6 +42,18 @@ const SESSION_ID = /^[\w-]{8,64}$/;
 const MAX_HANDLE_LENGTH = 4096;
 const MAX_TURNS = 3000;
 const MAX_TURN_LENGTH = 5000;
+// Too little was said in a shorter conversation to learn anything from it.
+const MIN_LEARNER_TURNS_TO_LEARN = 2;
+
+function parseUsage(value: unknown): TalkUsage | undefined {
+  if (value === undefined) return NO_USAGE;
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const parts = [usage.textIn, usage.audioIn, usage.textOut, usage.audioOut];
+  if (!parts.every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0)) return undefined;
+  const [textIn, audioIn, textOut, audioOut] = parts as [number, number, number, number];
+  return { textIn, audioIn, textOut, audioOut };
+}
 
 function parseTurns(value: unknown): TalkTurn[] | undefined {
   if (!Array.isArray(value) || value.length > MAX_TURNS) return undefined;
@@ -76,8 +95,54 @@ function todayFrom(value: string | undefined, now: Date): string {
   return value && LOCAL_DATE.test(value) ? value : now.toISOString().slice(0, 10);
 }
 
-export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressStore, talkStore, createLiveToken }: AppDeps) {
+export function createApp({
+  verifyGoogleToken,
+  kanaStore,
+  vocabStore,
+  progressStore,
+  talkStore,
+  createLiveToken,
+  availablePlans,
+  analyzeConversation,
+  chooseDailyTopics,
+}: AppDeps) {
   const app = new Hono().basePath("/api");
+
+  /** The choice in Settings. Until one is made, paid is the private option, so it comes first. */
+  const currentPlan = async (): Promise<AiPlan> => {
+    const stored = await talkStore.getPlan();
+    if (stored) return stored;
+    return availablePlans().paid ? "paid" : "free";
+  };
+
+  const monthSpend = async (today: string) => {
+    const { usage, seconds } = await talkStore.monthUsage(today.slice(0, 7));
+    return { spent: usageCost(usage), minutes: seconds / 60 };
+  };
+
+  /** Updates the tutor's memory from finished conversations, on the plan each one was held on. */
+  const learnFromConversations = async (finishedId: string | undefined, now: Date, fallbackPlan: AiPlan) => {
+    const available = availablePlans();
+    for (const session of await talkStore.pendingSessions(finishedId, now)) {
+      const learnerTurns = session.turns.filter((turn) => turn.role === "learner").length;
+      if (learnerTurns < MIN_LEARNER_TURNS_TO_LEARN) {
+        await talkStore.markLearned([session.id]);
+        continue;
+      }
+      const plan = session.plan ?? fallbackPlan;
+      // A conversation is never sent to a different plan's key, so it waits until this one is back.
+      if (!available[plan]) continue;
+      const memory = await talkStore.getMemory();
+      const analysis = await analyzeConversation({ memory, turns: session.turns, plan });
+      await talkStore.saveMemory(mergeAnalysis(memory, analysis, session.localDate));
+      await talkStore.markLearned([session.id]);
+    }
+  };
+
+  const refreshTopics = async (today: string, plan: AiPlan) => {
+    if (!availablePlans()[plan] || (await talkStore.getTopics(today))) return;
+    await talkStore.saveTopics(today, await chooseDailyTopics({ today, plan }));
+  };
 
   const loadVocabProgress = async (today: string, now: Date) => {
     const [cards, activity, storedPeak] = await Promise.all([
@@ -204,12 +269,32 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
   app.use("/talk/*", requireSession);
 
   app.post("/talk/token", async (c) => {
-    const { handle, seedHistory, today } = await readJson(c);
+    const { handle, seedHistory, today, plan: sessionPlan } = await readJson(c);
     if (handle !== undefined && (typeof handle !== "string" || handle.length > MAX_HANDLE_LENGTH)) {
       return c.json({ error: "Invalid handle." }, 400);
     }
+    if (sessionPlan !== undefined && !isPlan(sessionPlan)) return c.json({ error: "Unknown plan." }, 400);
     const now = new Date();
-    const { cards, progress } = await loadVocabProgress(todayFrom(typeof today === "string" ? today : undefined, now), now);
+    const date = todayFrom(typeof today === "string" ? today : undefined, now);
+
+    // A reconnect stays on the plan its conversation started on, whatever Settings says now.
+    const plan = sessionPlan ?? (await currentPlan());
+    if (!availablePlans()[plan]) {
+      const error = plan === "free"
+        ? "The free AI isn't set up yet. Switch to paid in Settings, or add its key."
+        : "The paid AI isn't set up yet. Switch to free in Settings, or add its key.";
+      return c.json({ error }, 409);
+    }
+    // Only stops new conversations, so nobody gets cut off mid-sentence.
+    if (plan === "paid" && !sessionPlan && (await monthSpend(date)).spent >= MONTHLY_BUDGET_USD) {
+      return c.json({ error: `You've reached your $${MONTHLY_BUDGET_USD} paid limit for this month. Switch to free in Settings to keep talking.` }, 409);
+    }
+
+    const [{ cards, progress }, memory, topics] = await Promise.all([
+      loadVocabProgress(date, now),
+      talkStore.getMemory(),
+      talkStore.getTopics(date),
+    ]);
     const level = describeAbility(progress.ability);
     const instructions = buildTutorInstructions({
       ability: progress.ability,
@@ -217,10 +302,13 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
       nextLevel: level.next,
       easingBack: progress.comeback.active,
       cards,
+      memory,
+      topics: topics ?? [],
+      specialDays: specialDaysOn(date),
     });
     try {
-      const token = await createLiveToken({ instructions, handle, seedHistory: seedHistory === true });
-      return c.json({ ...token, greeting: GREETING_PROMPT });
+      const token = await createLiveToken({ plan, instructions, handle, seedHistory: seedHistory === true });
+      return c.json({ ...token, plan, greeting: GREETING_PROMPT, quietPrompt: QUIET_PROMPT });
     } catch (error) {
       console.error("Couldn't create a Gemini token:", error);
       return c.json({ error: "The tutor isn't available right now." }, 503);
@@ -229,12 +317,15 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
 
   app.put("/talk/sessions/:id", async (c) => {
     const id = c.req.param("id");
-    const { localDate, startedAt, seconds, tokens, turns } = await readJson(c);
+    const { localDate, startedAt, seconds, tokens, turns, plan, usage } = await readJson(c);
     const parsedTurns = parseTurns(turns);
+    const parsedUsage = parseUsage(usage);
     const started = new Date(typeof startedAt === "string" ? startedAt : NaN);
     if (
       !SESSION_ID.test(id) ||
       !parsedTurns ||
+      !parsedUsage ||
+      (plan !== undefined && !isPlan(plan)) ||
       typeof localDate !== "string" ||
       !LOCAL_DATE.test(localDate) ||
       Number.isNaN(started.getTime()) ||
@@ -245,7 +336,63 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
     ) {
       return c.json({ error: "Invalid session." }, 400);
     }
-    await talkStore.saveSession({ id, localDate, startedAt: started, updatedAt: new Date(), seconds, tokens, turns: parsedTurns });
+    await talkStore.saveSession({
+      id,
+      localDate,
+      startedAt: started,
+      updatedAt: new Date(),
+      seconds,
+      tokens,
+      turns: parsedTurns,
+      ...(plan ? { plan } : {}),
+      usage: parsedUsage,
+    });
+    return c.json({ ok: true });
+  });
+
+  // The slow background work, called when the app opens and when a conversation ends, so
+  // starting a conversation never has to wait for it. Anything that fails is retried next time.
+  app.post("/talk/prepare", async (c) => {
+    const { today, finished } = await readJson(c);
+    const now = new Date();
+    const date = todayFrom(typeof today === "string" ? today : undefined, now);
+    const finishedId = typeof finished === "string" && SESSION_ID.test(finished) ? finished : undefined;
+    const plan = await currentPlan();
+    const results = await Promise.allSettled([learnFromConversations(finishedId, now, plan), refreshTopics(date, plan)]);
+    for (const result of results) {
+      if (result.status === "rejected") console.error("Couldn't prepare the tutor:", result.reason);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.get("/talk/plan", async (c) => {
+    const date = todayFrom(c.req.query("today"), new Date());
+    return c.json({
+      plan: await currentPlan(),
+      available: availablePlans(),
+      month: { ...(await monthSpend(date)), budget: MONTHLY_BUDGET_USD },
+    });
+  });
+
+  app.put("/talk/plan", async (c) => {
+    const { plan } = await readJson(c);
+    if (!isPlan(plan)) return c.json({ error: "Unknown plan." }, 400);
+    if (!availablePlans()[plan]) return c.json({ error: `The ${plan} AI isn't set up yet.` }, 409);
+    await talkStore.savePlan(plan);
+    return c.json({ plan });
+  });
+
+  app.get("/talk/memory", async (c) => {
+    const memory = await talkStore.getMemory();
+    return c.json({
+      ...memory,
+      speakingLevel: memory.speakingAbility === null ? null : speakingLevelName(memory.speakingAbility),
+    });
+  });
+
+  // Also retires anything not yet learned from, so forgotten things don't come straight back.
+  app.delete("/talk/memory", async (c) => {
+    await Promise.all([talkStore.clearMemory(), talkStore.markAllLearned()]);
     return c.json({ ok: true });
   });
 

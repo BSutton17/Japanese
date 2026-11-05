@@ -1,5 +1,5 @@
 import { EndSensitivity, GoogleGenAI, Modality, StartSensitivity } from "@google/genai";
-import { requireEnv } from "../env.js";
+import { apiKeyFor, type AiPlan } from "./plan.js";
 
 export const LIVE_MODEL = "gemini-3.8-live";
 // Short-lived tokens are only available on this API version.
@@ -12,8 +12,13 @@ const TOKEN_START_WINDOW_MS = 60 * 1000;
 const SPOKEN_LANGUAGES = ["ja-JP", "en-US"];
 // Long enough for a learner to stop and think mid-sentence without being answered too early.
 const END_OF_TURN_SILENCE_MS = 1500;
+// The app refreshes a conversation's context well before this size, which is what keeps turns cheap.
+// This is only a backstop, in case a refresh can't happen.
+const CONTEXT_TRIGGER_TOKENS = "8000";
+const CONTEXT_TARGET_TOKENS = "4000";
 
 export interface LiveTokenRequest {
+  plan: AiPlan;
   instructions: string;
   /** Resumes an earlier connection, keeping what was said. */
   handle?: string;
@@ -33,7 +38,9 @@ export interface LiveToken {
  * The settings and the tutor's instructions are sealed inside it. A token can only start one
  * connection, even to resume a conversation, so every reconnect needs a new one.
  */
-export async function createLiveToken({ instructions, handle, seedHistory }: LiveTokenRequest): Promise<LiveToken> {
+export async function createLiveToken({ plan, instructions, handle, seedHistory }: LiveTokenRequest): Promise<LiveToken> {
+  const apiKey = apiKeyFor(plan);
+  if (!apiKey) throw new Error(`No Gemini key for the ${plan} plan.`);
   const config = {
     responseModalities: [Modality.AUDIO],
     systemInstruction: instructions,
@@ -47,12 +54,12 @@ export async function createLiveToken({ instructions, handle, seedHistory }: Liv
         silenceDurationMs: END_OF_TURN_SILENCE_MS,
       },
     },
-    contextWindowCompression: { slidingWindow: {} },
+    contextWindowCompression: { triggerTokens: CONTEXT_TRIGGER_TOKENS, slidingWindow: { targetTokens: CONTEXT_TARGET_TOKENS } },
     sessionResumption: handle ? { handle } : {},
     ...(seedHistory ? { historyConfig: { initialHistoryInClientContent: true } } : {}),
   };
   const client = new GoogleGenAI({
-    apiKey: requireEnv("GEMINI_API_KEY"),
+    apiKey,
     httpOptions: { apiVersion: LIVE_API_VERSION },
   });
   const now = Date.now();

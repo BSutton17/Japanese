@@ -84,12 +84,23 @@ export interface TalkTurn {
   text: string;
 }
 
+export type AiPlan = "free" | "paid";
+
 export interface TalkToken {
   token: string;
   model: string;
   apiVersion: string;
   config: Record<string, unknown>;
+  plan: AiPlan;
   greeting: string;
+  quietPrompt: string;
+}
+
+export interface TalkUsage {
+  textIn: number;
+  audioIn: number;
+  textOut: number;
+  audioOut: number;
 }
 
 export interface TalkSessionSnapshot {
@@ -98,6 +109,27 @@ export interface TalkSessionSnapshot {
   seconds: number;
   tokens: number;
   turns: TalkTurn[];
+  plan?: AiPlan;
+  usage: TalkUsage;
+}
+
+export interface TalkPlanReport {
+  plan: AiPlan;
+  available: Record<AiPlan, boolean>;
+  month: { spent: number; minutes: number; budget: number };
+}
+
+export interface MemoryNote {
+  text: string;
+  date: string;
+}
+
+export interface TutorMemory {
+  speakingLevel: string | null;
+  lastConversation: MemoryNote | null;
+  facts: MemoryNote[];
+  struggles: MemoryNote[];
+  followUps: MemoryNote[];
 }
 
 export class ApiError extends Error {
@@ -153,8 +185,15 @@ export const api = {
 
   progress: () => request<ProgressReport>(`/progress?today=${localDate()}`),
 
-  talkToken: (options: { handle?: string; seedHistory: boolean }) =>
+  talkToken: (options: { handle?: string; seedHistory: boolean; plan?: AiPlan }) =>
     post<TalkToken>("/talk/token", { ...options, today: localDate() }),
   saveTalkSession: (id: string, snapshot: TalkSessionSnapshot) =>
     request<{ ok: true }>(`/talk/sessions/${id}`, { method: "PUT", body: JSON.stringify(snapshot) }),
+  // Keepalive lets this finish even if the app closes right after a conversation ends.
+  prepareTalk: (finished?: string) =>
+    request<{ ok: true }>("/talk/prepare", { method: "POST", body: JSON.stringify({ today: localDate(), finished }), keepalive: true }),
+  talkPlan: () => request<TalkPlanReport>(`/talk/plan?today=${localDate()}`),
+  saveTalkPlan: (plan: AiPlan) => request<{ plan: AiPlan }>("/talk/plan", { method: "PUT", body: JSON.stringify({ plan }) }),
+  tutorMemory: () => request<TutorMemory>("/talk/memory"),
+  forgetTutorMemory: () => request<{ ok: true }>("/talk/memory", { method: "DELETE" }),
 };

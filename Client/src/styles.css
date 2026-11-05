@@ -255,3 +255,11 @@ rt { font-size: 0.5em; font-weight: 400; color: var(--muted); }
 .diagnostics dl { display: grid; gap: 4px; margin-top: 6px; }
 .diagnostics dl div { display: flex; justify-content: space-between; gap: 12px; }
 .diagnostics dd { color: var(--ink); }
+
+/* Settings: AI plan and memory */
+.settings { max-height: calc(100dvh - 32px); overflow-y: auto; }
+/* Scrolls when it's long, rather than squeezing its rows on top of each other. */
+.settings > * { flex-shrink: 0; }
+.setting-section { display: flex; flex-direction: column; gap: 8px; }
+.segment:disabled { opacity: 0.45; }
+.memory-list { display: flex; flex-direction: column; gap: 4px; padding-left: 18px; list-style: disc; font-size: 0.85rem; line-height: 1.4; color: var(--muted); }

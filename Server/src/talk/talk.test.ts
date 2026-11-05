@@ -54,6 +54,10 @@ describe("tutor instructions", () => {
     expect(instructions()).toMatch(/if they speak in full Japanese sentences, match that level right away/);
   });
 
+  it("doesn't claim to know the weather or anything else around them", () => {
+    expect(instructions()).toMatch(/including today's weather, the time, or where they are. Never state these as fact/);
+  });
+
   it("doesn't correct spelling, since nothing is written", () => {
     expect(instructions()).toMatch(/never correct spelling or how something is written/);
   });
@@ -76,7 +80,7 @@ describe("tutor instructions", () => {
   it("caps the word list so the instructions stay small", () => {
     const text = instructions({ cards: studied(1000) });
     const section = text.split("Words they have studied:\n")[1]!.split("\n\nGood new words")[0]!;
-    expect(section.split("\n")).toHaveLength(150);
+    expect(section.split("\n")).toHaveLength(60);
   });
 
   it("suggests new words the learner hasn't studied yet", () => {
