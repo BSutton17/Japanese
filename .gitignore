@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dev-dist/
+.vercel/
+coverage/
+*.log
+
+# Secrets: only .env.example is committed
+.env
+.env.*
+!.env.example
