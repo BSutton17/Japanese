@@ -250,6 +250,9 @@ rt { font-size: 0.5em; font-weight: 400; color: var(--muted); }
 .turn { display: flex; flex-direction: column; gap: 2px; max-width: 90%; line-height: 1.45; overflow-wrap: anywhere; }
 .turn-who { font-size: 0.75rem; color: var(--muted); }
 .turn-learner { align-self: flex-end; text-align: right; }
+.turn-line { display: flex; align-items: flex-start; gap: 6px; }
+.replay { flex: none; display: grid; place-items: center; width: 44px; height: 44px; margin: -8px -6px -8px 0; background: transparent; border: 0; border-radius: 50%; color: var(--accent); }
+.replay:disabled { color: var(--muted); opacity: 0.5; }
 .diagnostics { font-size: 0.85rem; color: var(--muted); }
 .diagnostics summary { cursor: pointer; min-height: 32px; }
 .diagnostics dl { display: grid; gap: 4px; margin-top: 6px; }

@@ -14,7 +14,10 @@ export class AudioPlayer {
   private nextStart = 0;
   private playing = new Set<AudioBufferSourceNode>();
 
-  constructor(private readonly context: AudioContext) {}
+  constructor(
+    private readonly context: AudioContext,
+    private readonly onFinished?: () => void,
+  ) {}
 
   get isPlaying(): boolean {
     return this.playing.size > 0;
@@ -35,7 +38,10 @@ export class AudioPlayer {
     const source = this.context.createBufferSource();
     source.buffer = buffer;
     source.connect(this.context.destination);
-    source.onended = () => this.playing.delete(source);
+    source.onended = () => {
+      this.playing.delete(source);
+      if (this.playing.size === 0) this.onFinished?.();
+    };
 
     const start = Math.max(this.nextStart, this.context.currentTime + PLAYBACK_LEAD_SECONDS);
     source.start(start);

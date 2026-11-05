@@ -22,6 +22,8 @@ export interface TalkState {
   micLevel: number;
   seconds: number;
   error?: string;
+  /** The line being replayed right now. */
+  replayingId?: number;
   diagnostics: TalkDiagnostics;
 }
 
@@ -65,6 +67,8 @@ const CONTEXT_REFRESH_TOKENS = 5000;
 const CONNECT_TIMEOUT_MS = 15_000;
 // How long a silence lasts before Yuki offers something to talk about. Then she leaves them be.
 const QUIET_NUDGES_MS = [20_000, 60_000];
+// Her audio is about 50 KB a second, so only her most recent lines can be replayed.
+const MAX_RECORDINGS = 40;
 // The server's answer when a plan isn't set up or is over its limit, which retrying can't fix.
 const STATUS_CONFLICT = 409;
 
@@ -116,6 +120,12 @@ export class TalkEngine {
   private contextTokens = 0;
   /** So what's said next starts its own line, even from the same speaker. */
   private turnEnded = false;
+  private recordings = new Map<number, string[]>();
+  private recordingId?: number;
+  private nextRecordingId = 1;
+  private replayPlayer?: AudioPlayer;
+  /** After a conversation ends its audio is shut down, so replays need their own. */
+  private replayContext?: AudioContext;
 
   constructor(private readonly onChange: (state: TalkState) => void) {}
 
@@ -140,6 +150,12 @@ export class TalkEngine {
     this.plan = undefined;
     this.usage = { textIn: 0, audioIn: 0, textOut: 0, audioOut: 0 };
     this.quietNudges = 0;
+    this.stopReplay();
+    void this.replayContext?.close();
+    this.replayContext = undefined;
+    this.recordings.clear();
+    this.recordingId = undefined;
+    this.turnEnded = false;
     this.update({
       status: "starting",
       turns: [],
@@ -278,7 +294,8 @@ export class TalkEngine {
     if (Math.abs(level - this.state.micLevel) > 0.02) this.update({ micLevel: level });
     if (!this.session || this.leavingConnection) return;
     // Silence rather than nothing, so Gemini's speech detection keeps seeing a steady stream.
-    const muted = getSettings().noisyRoom && this.player?.isPlaying;
+    // A replay is always muted, or she'd hear herself and answer.
+    const muted = this.replayPlayer !== undefined || (getSettings().noisyRoom && this.player?.isPlaying);
     try {
       this.session.sendRealtimeInput({ audio: { data: bytesToBase64(muted ? new ArrayBuffer(pcm.byteLength) : pcm), mimeType: "audio/pcm;rate=16000" } });
     } catch {
@@ -290,7 +307,7 @@ export class TalkEngine {
   private offerTopicIfQuiet(): void {
     const wait = QUIET_NUDGES_MS[this.quietNudges];
     if (wait === undefined || !getSettings().offerTopics) return;
-    if (!this.session || this.state.status !== "listening" || this.player?.isPlaying) return;
+    if (!this.session || this.state.status !== "listening" || this.player?.isPlaying || this.replayPlayer) return;
     if (Date.now() - this.lastActivityAt < wait) return;
     this.quietNudges += 1;
     this.lastActivityAt = Date.now();
@@ -299,6 +316,56 @@ export class TalkEngine {
     } catch {
       // The connection just dropped, and its close event starts the reconnect.
     }
+  }
+
+  /** The recording for the line she's saying now, starting one if this is its first piece. */
+  private currentRecording(): number {
+    if (this.recordingId !== undefined) return this.recordingId;
+    const id = this.nextRecordingId++;
+    this.recordingId = id;
+    this.recordings.set(id, []);
+    for (const oldest of this.recordings.keys()) {
+      if (this.recordings.size <= MAX_RECORDINGS) break;
+      this.recordings.delete(oldest);
+      this.update({
+        turns: this.state.turns.map((turn) => (turn.replayId === oldest ? { role: turn.role, text: turn.text } : turn)),
+      });
+    }
+    return id;
+  }
+
+  private finishLine(): void {
+    this.recordingId = undefined;
+    this.turnEnded = true;
+  }
+
+  /** Plays a line again from its recording, which costs nothing. Tapping the same line again stops it. */
+  replay(id: number): void {
+    const chunks = this.recordings.get(id);
+    if (!chunks?.length) return;
+    const alreadyPlaying = this.state.replayingId === id;
+    this.stopReplay();
+    if (alreadyPlaying) return;
+
+    // Anything left of her current line would talk over the replay.
+    this.player?.stop();
+    const context = !this.stopped && this.context ? this.context : (this.replayContext ??= new AudioContext());
+    void context.resume();
+    this.replayPlayer = new AudioPlayer(context, () => this.endReplay());
+    for (const chunk of chunks) this.replayPlayer.play(chunk);
+    this.update({ replayingId: id });
+  }
+
+  private stopReplay(): void {
+    if (!this.replayPlayer) return;
+    this.replayPlayer.stop();
+    this.endReplay();
+  }
+
+  private endReplay(): void {
+    this.replayPlayer = undefined;
+    this.lastActivityAt = Date.now();
+    this.update({ replayingId: undefined });
   }
 
   private countUsage(usage: NonNullable<LiveMessage["usageMetadata"]>): void {
@@ -326,6 +393,7 @@ export class TalkEngine {
 
     if (content.interrupted) {
       this.player?.stop();
+      this.finishLine();
       this.update({ status: "listening" });
     }
     if (content.inputTranscription?.text) {
@@ -337,6 +405,8 @@ export class TalkEngine {
 
     for (const part of content.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) {
+        this.stopReplay();
+        this.recordings.get(this.currentRecording())?.push(part.inlineData.data);
         this.player?.play(part.inlineData.data);
         this.lastActivityAt = Date.now();
         if (this.state.status !== "speaking") this.update({ status: "speaking" });
@@ -344,7 +414,7 @@ export class TalkEngine {
     }
 
     if (content.turnComplete) {
-      this.turnEnded = true;
+      this.finishLine();
       if (this.state.status === "speaking") this.update({ status: "listening" });
       if (this.goAwayTimer) {
         this.moveToNewConnection();
@@ -364,7 +434,11 @@ export class TalkEngine {
     // Pieces arrive separately, so a direction can only be recognized once it's complete.
     const merged = ((continuing ? last.text : "") + text).replace(STAGE_DIRECTIONS, "");
     if (continuing) turns.pop();
-    if (merged.trim()) turns.push({ role, text: merged.trimStart() });
+    if (merged.trim()) {
+      const line: TalkTurn = { role, text: merged.trimStart() };
+      if (role === "tutor") line.replayId = this.currentRecording();
+      turns.push(line);
+    }
     this.update({ turns });
   }
 
@@ -483,6 +557,8 @@ export class TalkEngine {
     const session = this.session;
     this.session = undefined;
     session?.close();
+    this.stopReplay();
+    this.recordingId = undefined;
     this.player?.stop();
     this.mic?.stop();
     void this.context?.close();

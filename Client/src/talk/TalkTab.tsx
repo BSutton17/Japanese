@@ -19,6 +19,23 @@ function formatTime(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function ReplayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
 export function TalkTab() {
   const [state, setState] = useState<TalkState>();
   const engine = useRef<TalkEngine>(undefined);
@@ -87,7 +104,20 @@ export function TalkTab() {
             {turns.map((turn, index) => (
               <li key={index} className={`turn turn-${turn.role}`}>
                 <span className="turn-who">{turn.role === "tutor" ? "Yuki" : "You"}</span>
-                <span>{turn.text}</span>
+                <span className="turn-line">
+                  <span>{turn.text}</span>
+                  {turn.replayId !== undefined && (
+                    <button
+                      className="replay"
+                      aria-label={state?.replayingId === turn.replayId ? "Stop replay" : "Replay what Yuki said"}
+                      aria-pressed={state?.replayingId === turn.replayId}
+                      disabled={status === "speaking"}
+                      onClick={() => engine.current?.replay(turn.replayId!)}
+                    >
+                      {state?.replayingId === turn.replayId ? <StopIcon /> : <ReplayIcon />}
+                    </button>
+                  )}
+                </span>
               </li>
             ))}
           </ul>

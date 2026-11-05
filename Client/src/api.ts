@@ -82,6 +82,8 @@ export interface ProgressReport {
 export interface TalkTurn {
   role: "learner" | "tutor";
   text: string;
+  /** Which saved recording plays this line. Only lives on this device for this conversation. */
+  replayId?: number;
 }
 
 export type AiPlan = "free" | "paid";
