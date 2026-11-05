@@ -12,6 +12,11 @@ export function applyReview(card: Card | undefined, correct: boolean, now: Date)
   return scheduler.next(card ?? createEmptyCard(now), now, rating).card;
 }
 
+/** The estimated chance, from 0 to 1, that this card can be recalled right now. */
+export function recallChance(card: Card, now: Date): number {
+  return scheduler.retrievability(card, now);
+}
+
 export function isDue(card: Card, now: Date): boolean {
   return new Date(card.due).getTime() <= now.getTime();
 }

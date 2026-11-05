@@ -99,6 +99,9 @@ function VocabHome({ starting, onStart }: { starting: boolean; onStart(type: Voc
 
   return (
     <>
+      {summary.easingBack && (
+        <p className="note">Welcome back. New words stay small for now while you ease back in.</p>
+      )}
       {summary.nextBatch > 0 && (
         <button className="primary" onClick={() => onStart("new")} disabled={starting}>
           Learn {summary.nextBatch} new words

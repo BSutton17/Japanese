@@ -1,5 +1,6 @@
 import type { Card } from "ts-fsrs";
 import { isDue, isStrong, shuffled } from "../srs.js";
+import { SIMPLE_EXAMPLES } from "./simple-examples.js";
 import type { JlptLevel, Word } from "./types.js";
 import { WORDS } from "./words.js";
 
@@ -17,7 +18,7 @@ export interface VocabQuestion {
   reading: string;
   romaji: string;
   gloss: string;
-  example?: Word["example"];
+  example?: { furigana: string; en: string };
   direction: VocabDirection;
   isNew: boolean;
   showReading: boolean;
@@ -90,11 +91,26 @@ function pickWrongWords(target: Word, random: () => number): Word[] {
   return picked;
 }
 
+/**
+ * Picks a sentence for the learner's level, on the same scale as their progress: 1 is N5 and 3 is N3.
+ * Beginners get a simple sentence or none at all, since a hard one only gets in the way. Later on,
+ * each word uses its hardest sentence the learner is ready for.
+ */
+export function exampleFor(word: Word, ability: number): VocabQuestion["example"] {
+  const simple = SIMPLE_EXAMPLES[`${word.word}|${word.reading}`];
+  if (ability < 2 && simple) return simple;
+  const ceiling = ability < 1 ? 0 : ability < 3 ? 1 : 2;
+  const ready = word.examples.filter((example) => example.difficulty <= ceiling).at(-1);
+  if (!ready) return simple;
+  return { furigana: ready.furigana, en: ready.en };
+}
+
 function buildQuestion(
   word: Word,
   direction: VocabDirection,
   isNew: boolean,
   card: Card | undefined,
+  ability: number,
   random: () => number,
 ): VocabQuestion {
   // Readings fade once a word is strong, which turns the word into real reading practice.
@@ -111,7 +127,7 @@ function buildQuestion(
     reading: word.reading,
     romaji: word.romaji,
     gloss: glossOf(word),
-    example: word.example,
+    example: exampleFor(word, ability),
     direction,
     isNew,
     showReading: showReading && word.word !== word.reading,
@@ -121,8 +137,8 @@ function buildQuestion(
 }
 
 /** Takes on more when recent answers are strong, and less when they slip or reviews pile up. */
-export function newBatchSize(recentAccuracy: number | undefined, dueCount: number): number {
-  if (dueCount >= BACKLOG_LIMIT) return 5;
+export function newBatchSize(recentAccuracy: number | undefined, dueCount: number, easingBack = false): number {
+  if (dueCount >= BACKLOG_LIMIT || easingBack) return 5;
   if (recentAccuracy === undefined) return 8;
   if (recentAccuracy >= 0.9) return 12;
   if (recentAccuracy < 0.7) return 5;
@@ -171,6 +187,7 @@ function buildLinkedQuestions(
   firstDirection: (word: Word) => VocabDirection,
   isNew: boolean,
   cards: ReadonlyMap<string, Card>,
+  ability: number,
   random: () => number,
 ): VocabQuestion[] {
   const appeared = new Map<number, VocabDirection>();
@@ -179,7 +196,7 @@ function buildLinkedQuestions(
     const firstFormat = appeared.get(wordIndex);
     const direction = firstFormat ? opposite(firstFormat) : firstDirection(word);
     appeared.set(wordIndex, direction);
-    return buildQuestion(word, direction, isNew && !firstFormat, cards.get(word.id), random);
+    return buildQuestion(word, direction, isNew && !firstFormat, cards.get(word.id), ability, random);
   });
 }
 
@@ -196,10 +213,12 @@ export function buildSession(options: {
   type: VocabSessionType;
   cards: ReadonlyMap<string, Card>;
   recentAccuracy: number | undefined;
+  easingBack?: boolean;
+  ability?: number;
   now: Date;
   random?: () => number;
 }): VocabQuestion[] {
-  const { type, cards, recentAccuracy, now, random = Math.random } = options;
+  const { type, cards, recentAccuracy, easingBack = false, ability = 0, now, random = Math.random } = options;
 
   if (type === "review") {
     const dueTime = (word: Word) => new Date(cards.get(word.id)!.due).getTime();
@@ -214,6 +233,7 @@ export function buildSession(options: {
       () => (random() < 0.5 ? "ja-to-en" : "en-to-ja"),
       false,
       cards,
+      ability,
       random,
     );
   }
@@ -223,13 +243,18 @@ export function buildSession(options: {
   const unlocked = new Set(LEVELS.slice(0, currentLevelIndex(cards) + 2));
   const batch = WORDS.filter((word) => !cards.has(word.id) && unlocked.has(word.level)).slice(
     0,
-    newBatchSize(recentAccuracy, countDue(cards, now)),
+    newBatchSize(recentAccuracy, countDue(cards, now), easingBack),
   );
   // A new word is read first, since recognizing it is easier than recalling it.
-  return buildLinkedQuestions(batch, () => "ja-to-en", true, cards, random);
+  return buildLinkedQuestions(batch, () => "ja-to-en", true, cards, ability, random);
 }
 
-export function buildSummary(cards: ReadonlyMap<string, Card>, recentAccuracy: number | undefined, now: Date) {
+export function buildSummary(
+  cards: ReadonlyMap<string, Card>,
+  recentAccuracy: number | undefined,
+  now: Date,
+  easingBack = false,
+) {
   const due = countDue(cards, now);
   const levels = LEVELS.map((level) => {
     const words = WORDS.filter((word) => word.level === level);
@@ -245,6 +270,7 @@ export function buildSummary(cards: ReadonlyMap<string, Card>, recentAccuracy: n
     due,
     seen: cards.size,
     currentLevel: LEVELS[currentLevelIndex(cards)]!,
-    nextBatch: Math.min(newBatchSize(recentAccuracy, due), WORDS.length - cards.size),
+    nextBatch: Math.min(newBatchSize(recentAccuracy, due, easingBack), WORDS.length - cards.size),
+    easingBack,
   };
 }

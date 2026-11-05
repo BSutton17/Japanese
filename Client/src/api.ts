@@ -57,6 +57,26 @@ export interface VocabSummary {
   seen: number;
   currentLevel: string;
   nextBatch: number;
+  easingBack: boolean;
+}
+
+export interface AbilityDescription {
+  ability: number;
+  reached: string | null;
+  next: string | null;
+  percentToNext: number;
+}
+
+export interface ProgressReport {
+  level: AbilityDescription;
+  peak: AbilityDescription;
+  comeback: { active: boolean; daysAway: number; remainingDrop: number };
+  levels: { level: string; total: number; remembered: number; progress: number }[];
+  streak: { current: number; longest: number; freezes: number; practicedToday: boolean };
+  calendar: { date: string; answers: number; frozen: boolean }[];
+  today: { answers: number; correct: number };
+  totalAnswers: number;
+  kana: { script: string; learned: number; total: number }[];
 }
 
 export class ApiError extends Error {
@@ -104,8 +124,11 @@ export const api = {
   saveKanaReview: (itemId: string, correct: boolean) =>
     post<{ ok: true }>("/kana/reviews", { itemId, correct, localDate: localDate() }),
 
-  vocabSummary: () => request<VocabSummary>("/vocab/summary"),
-  vocabSession: (type: VocabSessionType) => request<{ questions: VocabQuestion[] }>(`/vocab/session?type=${type}`),
+  vocabSummary: () => request<VocabSummary>(`/vocab/summary?today=${localDate()}`),
+  vocabSession: (type: VocabSessionType) =>
+    request<{ questions: VocabQuestion[] }>(`/vocab/session?type=${type}&today=${localDate()}`),
   saveVocabReview: (wordId: string, correct: boolean) =>
     post<{ ok: true }>("/vocab/reviews", { wordId, correct, localDate: localDate() }),
+
+  progress: () => request<ProgressReport>(`/progress?today=${localDate()}`),
 };

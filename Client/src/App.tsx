@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { KanaTab } from "./kana/KanaTab";
 import { Login } from "./Login";
+import { ProgressTab } from "./progress/ProgressTab";
 import { VocabTab } from "./vocab/VocabTab";
 
 type AuthState =
@@ -14,10 +15,10 @@ const TABS = [
   { name: "Talk", ready: false },
   { name: "Vocab", ready: true },
   { name: "Kana", ready: true },
-  { name: "Progress", ready: false },
+  { name: "Progress", ready: true },
 ] as const;
 
-type ReadyTab = "Vocab" | "Kana";
+type ReadyTab = "Vocab" | "Kana" | "Progress";
 
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: "loading" });
@@ -55,7 +56,9 @@ export function App() {
         <button className="link" onClick={signOut}>Sign out</button>
       </header>
       <main className="content">
-        {activeTab === "Kana" ? <KanaTab /> : <VocabTab />}
+        {activeTab === "Kana" && <KanaTab />}
+        {activeTab === "Vocab" && <VocabTab />}
+        {activeTab === "Progress" && <ProgressTab />}
       </main>
       <nav className="tabs" aria-label="Sections">
         {TABS.map((tab) =>

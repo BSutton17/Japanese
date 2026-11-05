@@ -10,5 +10,6 @@ export interface Word {
   pos: string;
   /** Position in the frequency table, where 1 is the most common word. */
   rank: number;
-  example?: { furigana: string; en: string };
+  /** Up to two sentences, easiest first. Difficulty 0 suits a beginner, and 2 is past N3. */
+  examples: { furigana: string; en: string; difficulty: number }[];
 }

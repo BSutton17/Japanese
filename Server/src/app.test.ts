@@ -3,6 +3,8 @@ import type { Card } from "ts-fsrs";
 import { SignJWT } from "jose";
 import { createApp } from "./app.js";
 import type { KanaReview, KanaStore } from "./kana/store.js";
+import type { DayActivity } from "./progress/progress.js";
+import type { ProgressStore } from "./progress/store.js";
 import type { VocabReview, VocabStore } from "./vocab/store.js";
 import { WORDS } from "./vocab/words.js";
 
@@ -39,12 +41,26 @@ function fakeVocabStore() {
   return { store, reviews, cards };
 }
 
+function fakeProgressStore() {
+  const state = { peak: 0, activity: [] as DayActivity[] };
+  const store: ProgressStore = {
+    getActivity: async () => state.activity,
+    getPeak: async () => state.peak,
+    savePeak: async (peak) => {
+      state.peak = peak;
+    },
+  };
+  return { store, state };
+}
+
 function setup() {
   const fake = fakeStore();
   const vocab = fakeVocabStore();
+  const progress = fakeProgressStore();
   const app = createApp({
     kanaStore: fake.store,
     vocabStore: vocab.store,
+    progressStore: progress.store,
     verifyGoogleToken: async (token) => {
       if (token === "bad") throw new Error("invalid signature");
       if (token === "unverified") return { email: ALLOWED, emailVerified: false };
@@ -62,7 +78,7 @@ function setup() {
     const response = await post("/auth/google", { credential: "good" });
     return response.headers.get("set-cookie")!.split(";")[0]!;
   };
-  return { app, post, signIn, vocab, ...fake };
+  return { app, post, signIn, vocab, progress, ...fake };
 }
 
 beforeEach(() => {
@@ -207,5 +223,71 @@ describe("vocab routes", () => {
       expect((await post("/vocab/reviews", body, Cookie)).status).toBe(400);
     }
     expect(vocab.reviews).toHaveLength(0);
+  });
+});
+
+describe("progress route", () => {
+  it("requires a session", async () => {
+    const { app } = setup();
+    expect((await app.request("/api/progress")).status).toBe(401);
+  });
+
+  it("starts empty and below N5", async () => {
+    const { app, signIn } = setup();
+    const Cookie = await signIn();
+    const response = await app.request("/api/progress?today=2026-11-04", { headers: { Cookie } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      level: { reached: null, next: "N5" },
+      comeback: { active: false },
+      streak: { current: 0, practicedToday: false },
+      totalAnswers: 0,
+    });
+  });
+
+  it("reports streak, today, kana, and the calendar from saved activity", async () => {
+    const { app, signIn, progress } = setup();
+    const Cookie = await signIn();
+    progress.state.activity = [
+      { date: "2026-11-03", answers: 10, correct: 8 },
+      { date: "2026-11-04", answers: 20, correct: 15 },
+    ];
+    const response = await app.request("/api/progress?today=2026-11-04", { headers: { Cookie } });
+    const body = (await response.json()) as {
+      calendar: { date: string; answers: number }[];
+      kana: { script: string; total: number }[];
+    };
+    expect(body).toMatchObject({
+      streak: { current: 2, practicedToday: true },
+      today: { answers: 20, correct: 15 },
+      totalAnswers: 30,
+    });
+    expect(body.calendar.at(-1)).toMatchObject({ date: "2026-11-04", answers: 20 });
+    expect(body.kana[0]).toMatchObject({ script: "Hiragana", total: 104 });
+  });
+
+  it("follows the learner's date, not the server's", async () => {
+    const { app, signIn, progress } = setup();
+    const Cookie = await signIn();
+    progress.state.activity = [{ date: "2030-01-01", answers: 5, correct: 5 }];
+    const response = await app.request("/api/progress?today=2030-01-01", { headers: { Cookie } });
+    expect(await response.json()).toMatchObject({ streak: { current: 1, practicedToday: true } });
+  });
+
+  it("eases vocab back after a break, and keeps the peak", async () => {
+    const { app, signIn, progress } = setup();
+    const Cookie = await signIn();
+    progress.state.peak = 2.5;
+    progress.state.activity = [{ date: "2026-10-21", answers: 20, correct: 20 }];
+
+    const summary = await app.request("/api/vocab/summary?today=2026-11-04", { headers: { Cookie } });
+    expect(await summary.json()).toMatchObject({ easingBack: true, nextBatch: 5 });
+
+    const report = await app.request("/api/progress?today=2026-11-04", { headers: { Cookie } });
+    expect(await report.json()).toMatchObject({
+      comeback: { active: true, daysAway: 14 },
+      peak: { reached: "N4", next: "N3" },
+    });
+    expect(progress.state.peak).toBe(2.5);
   });
 });

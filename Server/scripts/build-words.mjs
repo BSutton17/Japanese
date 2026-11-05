@@ -22,6 +22,11 @@ const COMPOUND_COUNT_CAP = 30000;
 // Shorter words are too often split by chance for their parts to say anything about them.
 const MIN_COMPOUND_LENGTH = 3;
 
+// The source's only N5 entry for 私 is the formal わたくし, but a learner needs the everyday わたし.
+const CORRECTIONS = {
+  "私|わたくし": { reading: "わたし", romaji: "watashi", meanings: ["I; me"] },
+};
+
 async function fetchLevel(level) {
   const url = `https://raw.githubusercontent.com/evanclan/OpenJLPT/${OPENJLPT_COMMIT}/data/json/vocab/${level}.json`;
   const response = await fetch(url);
@@ -107,11 +112,36 @@ function estimateCount(entry, baseForms, surfaceForms, known, readingUses) {
   return canUseParts ? Math.max(direct, compoundCount(entry.word, known)) : direct;
 }
 
-function toWord(entry, rank) {
-  // The shortest sentence is usually the easiest to read. Not every sentence has furigana, so those
-  // with it come first, and the rest fall back to the plain sentence.
-  const examples = [...(entry.examples ?? [])].sort((a, b) => a.ja.length - b.ja.length);
-  const example = examples.find((candidate) => candidate.furigana) ?? examples[0];
+// Sentences come from a public, user-contributed collection, so some aren't suitable for a tutor.
+const UNSUITABLE_JA = /アソコ|セックス|エッチ|ちんちん|おっぱい|殺|死ね|自殺|強姦|麻薬/;
+const UNSUITABLE_EN = /\b(sex|sexy|sexual|naked|nude|porn\w*|rape\w*|penis|vagina|breasts?|crotch|whore|bitch|fuck\w*|shit|ass|asshole|kill\w*|murder\w*|suicide|drug addict|cocaine|heroin)\b/i;
+
+// Grammar a beginner hasn't met yet, which makes an otherwise short sentence hard.
+const ADVANCED_GRAMMAR = /なあ|たら|ければ|ながら|ように|らしい|ようだ|そうだ|べき|ものの|わけ|はず|ぜ|じゃなかった|れば|させ|られ|について|として|にとって/;
+
+/** 0 suits a beginner, 1 suits someone working toward N3, and 2 is for anyone past that. */
+function difficultyOf(sentence, kanjiLevels) {
+  let hardestKanji = -1;
+  for (const char of sentence) {
+    if (/[一-鿿]/.test(char)) hardestKanji = Math.max(hardestKanji, kanjiLevels.get(char) ?? 5);
+  }
+  if (sentence.length <= 16 && hardestKanji <= 1 && !ADVANCED_GRAMMAR.test(sentence)) return 0;
+  return sentence.length <= 30 && hardestKanji <= 2 ? 1 : 2;
+}
+
+function toWord(entry, rank, kanjiLevels) {
+  // Up to two sentences, easiest first, keeping those with furigana ahead of those without.
+  const examples = (entry.examples ?? [])
+    .filter((example) => !UNSUITABLE_JA.test(example.ja) && !UNSUITABLE_EN.test(example.en))
+    .map((example) => ({
+      furigana: example.furigana ?? example.ja,
+      en: example.en,
+      difficulty: difficultyOf(example.ja, kanjiLevels),
+      hasFurigana: Boolean(example.furigana),
+      length: example.ja.length,
+    }))
+    .sort((a, b) => a.difficulty - b.difficulty || Number(b.hasFurigana) - Number(a.hasFurigana) || a.length - b.length)
+    .map(({ furigana, en, difficulty }) => ({ furigana, en, difficulty }));
   return {
     id: entry.id,
     word: entry.word,
@@ -121,12 +151,29 @@ function toWord(entry, rank) {
     level: entry.level,
     pos: entry.pos?.[0] ?? "n",
     rank,
-    ...(example ? { example: { furigana: example.furigana ?? example.ja, en: example.en } } : {}),
+    examples,
   };
 }
 
-const entries = (await Promise.all(LEVELS.map(fetchLevel))).flat();
-const [baseForms, surfaceForms] = await Promise.all([fetchCounts("tubelex-ja-base-pos"), fetchCounts("tubelex-ja")]);
+async function fetchKanjiLevels() {
+  const levels = new Map();
+  for (const [index, level] of LEVELS.entries()) {
+    const url = `https://raw.githubusercontent.com/evanclan/OpenJLPT/${OPENJLPT_COMMIT}/data/json/kanji/${level}.json`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+    for (const kanji of await response.json()) levels.set(kanji.character, index);
+  }
+  return levels;
+}
+
+const entries = (await Promise.all(LEVELS.map(fetchLevel)))
+  .flat()
+  .map((entry) => ({ ...entry, ...CORRECTIONS[`${entry.word}|${entry.reading}`] }));
+const [baseForms, surfaceForms, kanjiLevels] = await Promise.all([
+  fetchCounts("tubelex-ja-base-pos"),
+  fetchCounts("tubelex-ja"),
+  fetchKanjiLevels(),
+]);
 const known = new Map([...surfaceForms, ...baseForms]);
 
 const readingUses = new Map();
@@ -137,17 +184,25 @@ const scored = entries.map((entry) => ({
   count: estimateCount(entry, baseForms, surfaceForms, known, readingUses),
 }));
 
-// Listed levels run from easiest to hardest, so the first reading of a written word is its primary one.
-const seenSpellings = new Set();
+// The corpus can't tell readings of a written word apart. The primary one is at the easiest level,
+// and then the one most often written in kana, which picks わたし over わたくし for 私.
+const bySpelling = new Map();
 for (const item of scored) {
-  if (seenSpellings.has(item.entry.word)) item.count *= SECONDARY_READING_SHARE;
-  seenSpellings.add(item.entry.word);
+  bySpelling.set(item.entry.word, [...(bySpelling.get(item.entry.word) ?? []), item]);
+}
+for (const items of bySpelling.values()) {
+  const kanaCount = (item) => baseForms.get(item.entry.reading)?.count ?? 0;
+  const levelOf = (item) => LEVELS.indexOf(item.entry.level.toLowerCase());
+  items.sort((a, b) => levelOf(a) - levelOf(b) || kanaCount(b) - kanaCount(a));
+  for (const item of items.slice(1)) item.count *= SECONDARY_READING_SHARE;
 }
 
 // Uncounted words fall back to a stable order based on their hashed ids.
 scored.sort((a, b) => b.count - a.count || a.entry.id.localeCompare(b.entry.id));
 
-const lines = scored.map(({ entry }, index) => `  ${JSON.stringify(JSON.stringify(toWord(entry, index + 1)))},`);
+const lines = scored.map(
+  ({ entry }, index) => `  ${JSON.stringify(JSON.stringify(toWord(entry, index + 1, kanjiLevels)))},`,
+);
 
 // Each word is a JSON string, because TypeScript can't type an object literal this large.
 writeFileSync(
@@ -169,9 +224,5 @@ console.log(`Wrote ${lines.length} words, ${uncounted.length} without a frequenc
 console.log("Uncounted:", uncounted.slice(0, 30).map(({ entry }) => entry.word).join(" "));
 console.log("Top 100:", scored.slice(0, 100).map(({ entry }) => `${entry.word}(${entry.level[1]})`).join(" "));
 const firstN5 = scored.filter(({ entry }) => entry.level === "N5" || entry.level === "N4");
-console.log("First 40 to learn:", firstN5.slice(0, 40).map(({ entry }) => entry.word).join(" "));
-console.log("Last N5:", scored.filter(({ entry }) => entry.level === "N5").slice(-20).map(({ entry }) => entry.word).join(" "));
-for (const word of ["飛行機", "お母さん", "お金", "日曜日", "一つ", "映画館", "いただきます", "冷蔵庫", "もう一度", "だから", "ください", "だが", "それなのに", "万年筆", "すみません", "ごめんなさい", "どうして", "今に", "何か", "僕", "活ける", "蚊", "先生", "今年"]) {
-  const matches = scored.map((item, rank) => ({ ...item, rank: rank + 1 })).filter((item) => item.entry.word === word);
-  console.log(word, matches.map((item) => `${item.entry.reading} ${item.entry.level} rank ${item.rank}`).join("; ") || "not in list");
-}
+console.log("First words to learn, as word|reading:");
+console.log(firstN5.slice(0, 190).map(({ entry }) => `${entry.word}|${entry.reading}`).join(" "));

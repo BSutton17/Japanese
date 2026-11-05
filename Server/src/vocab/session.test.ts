@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyCard, type Card } from "ts-fsrs";
-import { WORDS_BY_ID, buildSession, buildSummary, linkedOrder, newBatchSize, normalizeMeaning } from "./session.js";
+import { WORDS_BY_ID, buildSession, buildSummary, exampleFor, linkedOrder, newBatchSize, normalizeMeaning } from "./session.js";
+import { SIMPLE_EXAMPLES } from "./simple-examples.js";
 import { WORDS } from "./words.js";
 
 const NOW = new Date("2026-11-04T12:00:00Z");
@@ -24,9 +25,26 @@ describe("word list", () => {
 
   it("gives every example sentence text to display", () => {
     for (const word of WORDS) {
-      if (!word.example) continue;
-      expect(word.example.furigana, word.word).toBeTruthy();
-      expect(word.example.en, word.word).toBeTruthy();
+      for (const example of word.examples) {
+        expect(example.furigana, word.word).toBeTruthy();
+        expect(example.en, word.word).toBeTruthy();
+      }
+    }
+  });
+
+  it("uses the everyday reading of 私", () => {
+    const watashi = WORDS.find((word) => word.word === "私" && word.level === "N5")!;
+    expect(watashi.reading).toBe("わたし");
+    expect(watashi.romaji).toBe("watashi");
+    expect(watashi.rank).toBeLessThan(60);
+  });
+
+  it("filters out unsuitable sentences", () => {
+    for (const word of WORDS) {
+      for (const example of word.examples) {
+        expect(example.furigana, word.word).not.toMatch(/アソコ|おっぱい|ちんちん/);
+        expect(example.en, word.word).not.toMatch(/\b(sex|naked|penis|fuck|murder)\b/i);
+      }
     }
   });
 });
@@ -57,6 +75,70 @@ describe("frequency table", () => {
     for (const phrase of ["すみません", "もう一度", "どうして", "だから", "飛行機", "お母さん"]) {
       expect(rankOf(phrase), phrase).toBeLessThan(3000);
     }
+  });
+});
+
+describe("example sentences", () => {
+  const entries = Object.entries(SIMPLE_EXAMPLES);
+  const plainText = (furigana: string) => furigana.replace(/\{([^|}]+)\|[^}]+\}/g, "$1");
+  const word = (overrides: Partial<(typeof WORDS)[0]>) => ({ ...WORDS[0]!, word: "テスト", reading: "テスト", ...overrides });
+
+  it("have a simple sentence for each word a beginner meets first", () => {
+    const first = WORDS.filter((candidate) => candidate.level === "N5" || candidate.level === "N4").slice(0, 150);
+    for (const candidate of first) {
+      expect(SIMPLE_EXAMPLES[`${candidate.word}|${candidate.reading}`], candidate.word).toBeDefined();
+    }
+  });
+
+  it("only cover words that exist, and use the word in the sentence", () => {
+    const known = new Set(WORDS.map((candidate) => `${candidate.word}|${candidate.reading}`));
+    for (const [key, example] of entries) {
+      expect(known.has(key), key).toBe(true);
+      const [spelling] = key.split("|") as [string];
+      // する changes to し when conjugated, so its first character isn't in the sentence.
+      if (spelling !== "する") expect(plainText(example.furigana), key).toContain(spelling[0]);
+    }
+  });
+
+  it("have well-formed furigana on every kanji", () => {
+    for (const [key, example] of entries) {
+      const leftover = example.furigana.replace(/\{[^|}]+\|[^}]+\}/g, "");
+      expect(leftover, key).not.toMatch(/[{}|\u4e00-\u9fff]/);
+      expect(example.en, key).toBeTruthy();
+    }
+  });
+
+  it("give a beginner the simple sentence, then harder ones as they level up", () => {
+    const easy = { furigana: "やさしい。", en: "easy", difficulty: 0 };
+    const medium = { furigana: "ふつう。", en: "medium", difficulty: 1 };
+    const hard = { furigana: "むずかしい。", en: "hard", difficulty: 2 };
+    const both = word({ examples: [easy, medium, hard] });
+
+    const suru = WORDS.find((candidate) => candidate.word === "する")!;
+    expect(exampleFor(suru, 0)).toEqual(SIMPLE_EXAMPLES["する|する"]);
+    expect(exampleFor(suru, 1.5)).toEqual(SIMPLE_EXAMPLES["する|する"]);
+
+    expect(exampleFor(both, 0)?.en).toBe("easy");
+    expect(exampleFor(both, 1.5)?.en).toBe("medium");
+    expect(exampleFor(both, 3)?.en).toBe("hard");
+  });
+
+  it("hide a hard sentence from a beginner rather than show it", () => {
+    const hard = { furigana: "むずかしい。", en: "hard", difficulty: 2 };
+    expect(exampleFor(word({ examples: [hard] }), 0)).toBeUndefined();
+    expect(exampleFor(word({ examples: [hard] }), 3.5)?.en).toBe("hard");
+  });
+
+  it("fall back to the simple sentence when nothing else fits", () => {
+    const suru = WORDS.find((candidate) => candidate.word === "する")!;
+    const onlyHard = { ...suru, examples: [{ furigana: "むずかしい。", en: "hard", difficulty: 2 }] };
+    expect(exampleFor(onlyHard, 2.5)).toEqual(SIMPLE_EXAMPLES["する|する"]);
+  });
+
+  it("reach new-word questions at the learner's level", () => {
+    const [first] = buildSession({ type: "new", cards: new Map(), recentAccuracy: undefined, now: NOW });
+    expect(first!.word).toBe("する");
+    expect(first!.example).toEqual(SIMPLE_EXAMPLES["する|する"]);
   });
 });
 
@@ -173,6 +255,18 @@ describe("new word sessions", () => {
     expect(newBatchSize(0.8, 0)).toBe(8);
     expect(newBatchSize(0.5, 0)).toBe(5);
     expect(newBatchSize(0.95, 50)).toBe(5);
+  });
+
+  it("takes on less while easing back from a break", () => {
+    expect(newBatchSize(0.95, 0, true)).toBe(5);
+    const words = (easingBack: boolean) =>
+      new Set(
+        buildSession({ type: "new", cards: new Map(), recentAccuracy: 0.95, easingBack, now: NOW }).map(
+          (question) => question.itemId,
+        ),
+      ).size;
+    expect(words(false)).toBe(12);
+    expect(words(true)).toBe(5);
   });
 });
 
