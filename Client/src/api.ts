@@ -1,5 +1,7 @@
 export type Script = "hiragana" | "katakana";
-export type KanaStatus = "new" | "learning" | "due" | "strong";
+export type CardStatus = "new" | "learning" | "due" | "strong";
+
+export type KanaSelection = { mode: "row"; rowId: string } | { mode: "all" } | { mode: "review" };
 
 export interface KanaQuestion {
   itemId: string;
@@ -11,13 +13,50 @@ export interface KanaQuestion {
   answer: string;
 }
 
+export interface KanaRowSummary {
+  id: string;
+  group: "basic" | "dakuten" | "combo";
+  items: { kana: string; romaji: string; status: CardStatus }[];
+}
+
 export interface KanaSummary {
   script: Script;
   total: number;
   seen: number;
   due: number;
   strong: number;
-  items: { kana: string; romaji: string; group: "basic" | "dakuten" | "combo"; status: KanaStatus }[];
+  nextRowId: string | null;
+  rows: KanaRowSummary[];
+}
+
+export type VocabDirection = "ja-to-en" | "en-to-ja";
+export type VocabSessionType = "new" | "review";
+
+export interface VocabOption {
+  text: string;
+  reading?: string;
+}
+
+export interface VocabQuestion {
+  itemId: string;
+  word: string;
+  reading: string;
+  romaji: string;
+  gloss: string;
+  example?: { furigana: string; en: string };
+  direction: VocabDirection;
+  isNew: boolean;
+  showReading: boolean;
+  options: VocabOption[];
+  answer: string;
+}
+
+export interface VocabSummary {
+  levels: { level: string; total: number; seen: number; strong: number }[];
+  due: number;
+  seen: number;
+  currentLevel: string;
+  nextBatch: number;
 }
 
 export class ApiError extends Error {
@@ -48,13 +87,25 @@ function localDate(): string {
   return new Date().toLocaleDateString("en-CA");
 }
 
+function kanaSessionQuery(script: Script, selection: KanaSelection): string {
+  const params = new URLSearchParams({ script, mode: selection.mode });
+  if (selection.mode === "row") params.set("row", selection.rowId);
+  return params.toString();
+}
+
 export const api = {
   me: () => request<{ email: string }>("/auth/me"),
   signIn: (credential: string) => post<{ email: string }>("/auth/google", { credential }),
   signOut: () => post<{ ok: true }>("/auth/logout", {}),
+
   kanaSummary: (script: Script) => request<KanaSummary>(`/kana/summary?script=${script}`),
-  kanaSession: (script: Script) =>
-    request<{ questions: KanaQuestion[] }>(`/kana/session?script=${script}`),
+  kanaSession: (script: Script, selection: KanaSelection) =>
+    request<{ questions: KanaQuestion[] }>(`/kana/session?${kanaSessionQuery(script, selection)}`),
   saveKanaReview: (itemId: string, correct: boolean) =>
     post<{ ok: true }>("/kana/reviews", { itemId, correct, localDate: localDate() }),
+
+  vocabSummary: () => request<VocabSummary>("/vocab/summary"),
+  vocabSession: (type: VocabSessionType) => request<{ questions: VocabQuestion[] }>(`/vocab/session?type=${type}`),
+  saveVocabReview: (wordId: string, correct: boolean) =>
+    post<{ ok: true }>("/vocab/reviews", { wordId, correct, localDate: localDate() }),
 };

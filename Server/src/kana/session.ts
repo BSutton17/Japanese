@@ -1,8 +1,10 @@
-import { Rating, createEmptyCard, fsrs, type Card } from "ts-fsrs";
-import { KANA, lookalikesOf, type KanaItem, type Script } from "./data.js";
+import type { Card } from "ts-fsrs";
+import { isDue, shuffled, statusOf } from "../srs.js";
+import { KANA, KANA_ROWS, lookalikesOf, type KanaItem, type KanaRow, type Script } from "./data.js";
 
 export type Direction = "kana-to-romaji" | "romaji-to-kana";
-export type KanaStatus = "new" | "learning" | "due" | "strong";
+
+export type KanaSelection = { mode: "row"; rowId: string } | { mode: "all" } | { mode: "review" };
 
 export interface KanaQuestion {
   itemId: string;
@@ -14,47 +16,28 @@ export interface KanaQuestion {
   answer: string;
 }
 
-const SESSION_SIZE = 20;
+const REVIEW_SESSION_SIZE = 20;
 const OPTION_COUNT = 4;
-// A card this stable is remembered for about three weeks, so it counts as strong.
-const STRONG_STABILITY_DAYS = 21;
 
-const scheduler = fsrs();
-
-export function applyReview(card: Card | undefined, correct: boolean, now: Date): Card {
-  const rating = correct ? Rating.Good : Rating.Again;
-  return scheduler.next(card ?? createEmptyCard(now), now, rating).card;
-}
-
-function shuffled<T>(items: readonly T[], random: () => number): T[] {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j]!, copy[i]!];
-  }
-  return copy;
-}
-
-/** Introduces more new characters when recent answers are strong and fewer when they aren't. */
-export function newItemLimit(recentAccuracy: number | undefined): number {
-  if (recentAccuracy === undefined) return 5;
-  if (recentAccuracy >= 0.9) return 10;
-  if (recentAccuracy < 0.7) return 2;
-  return 5;
-}
-
-function buildQuestion(item: KanaItem, isNew: boolean, random: () => number): KanaQuestion {
-  // New characters are always shown first, since nobody can recall one they haven't met.
-  const direction: Direction = isNew || random() < 0.5 ? "kana-to-romaji" : "romaji-to-kana";
+function buildQuestion(
+  item: KanaItem,
+  direction: Direction,
+  isNew: boolean,
+  random: () => number,
+  preferred: readonly KanaItem[] = [],
+): KanaQuestion {
   const display = (other: KanaItem) => (direction === "kana-to-romaji" ? other.romaji : other.kana);
 
   const lookalikes = new Set(lookalikesOf(item));
+  const preferredIds = new Set(preferred.map((other) => other.id));
   // Some characters share a reading (じ and ぢ are both "ji"), so those can't be wrong answers.
   const pool = KANA[item.script].filter((other) => other.romaji !== item.romaji);
+  const rest = pool.filter((other) => !preferredIds.has(other.id) && !lookalikes.has(other.kana));
   const candidates = [
-    ...shuffled(pool.filter((other) => lookalikes.has(other.kana)), random),
-    ...shuffled(pool.filter((other) => !lookalikes.has(other.kana) && other.group === item.group), random),
-    ...shuffled(pool.filter((other) => !lookalikes.has(other.kana) && other.group !== item.group), random),
+    ...shuffled(pool.filter((other) => preferredIds.has(other.id)), random),
+    ...shuffled(pool.filter((other) => !preferredIds.has(other.id) && lookalikes.has(other.kana)), random),
+    ...shuffled(rest.filter((other) => other.group === item.group), random),
+    ...shuffled(rest.filter((other) => other.group !== item.group), random),
   ];
 
   const answer = display(item);
@@ -70,61 +53,79 @@ function buildQuestion(item: KanaItem, isNew: boolean, random: () => number): Ka
   };
 }
 
-export function buildSession(options: {
-  script: Script;
-  cards: ReadonlyMap<string, Card>;
-  recentAccuracy: number | undefined;
-  now: Date;
-  random?: () => number;
-  size?: number;
-}): KanaQuestion[] {
-  const { script, cards, recentAccuracy, now, random = Math.random, size = SESSION_SIZE } = options;
-  const items = KANA[script];
-  const seen = items.filter((item) => cards.has(item.id));
+/** Only this row's characters: read each one, then pick each one out from its reading. */
+function buildRowSession(row: KanaRow, cards: ReadonlyMap<string, Card>, random: () => number): KanaQuestion[] {
+  const reading = row.items.map((item) =>
+    buildQuestion(item, "kana-to-romaji", !cards.has(item.id), random, row.items),
+  );
+  const recognizing = shuffled(row.items, random).map((item) =>
+    buildQuestion(item, "romaji-to-kana", false, random, row.items),
+  );
+  return [...reading, ...recognizing];
+}
+
+/** Every character in random order, as a straight test with no introductions. */
+function buildAllSession(script: Script, cards: ReadonlyMap<string, Card>, random: () => number): KanaQuestion[] {
+  return shuffled(KANA[script], random).map((item) => {
+    // Nobody can pick out a character from its reading before they've seen it.
+    const direction = !cards.has(item.id) || random() < 0.5 ? "kana-to-romaji" : "romaji-to-kana";
+    return buildQuestion(item, direction, false, random);
+  });
+}
+
+/** Only characters already studied that are due again, taking the most overdue first. */
+function buildReviewSession(script: Script, cards: ReadonlyMap<string, Card>, now: Date, random: () => number): KanaQuestion[] {
   const dueTime = (item: KanaItem) => new Date(cards.get(item.id)!.due).getTime();
-
-  const due = seen
-    .filter((item) => dueTime(item) <= now.getTime())
+  const due = KANA[script]
+    .filter((item) => {
+      const card = cards.get(item.id);
+      return card !== undefined && isDue(card, now);
+    })
     .sort((a, b) => dueTime(a) - dueTime(b))
-    .slice(0, size);
-
-  // Reviews come first, so a backlog pauses new characters rather than piling more on.
-  const unseen = items.filter((item) => !cards.has(item.id));
-  const fresh = unseen.slice(0, Math.min(newItemLimit(recentAccuracy), size - due.length));
-
-  // Short sessions are topped up with the characters closest to being forgotten.
-  const chosen = new Set([...due, ...fresh]);
-  const extra = seen
-    .filter((item) => !chosen.has(item))
-    .sort((a, b) => cards.get(a.id)!.stability - cards.get(b.id)!.stability)
-    .slice(0, size - chosen.size);
-
-  const freshIds = new Set(fresh.map((item) => item.id));
-  return shuffled([...due, ...fresh, ...extra], random).map((item) =>
-    buildQuestion(item, freshIds.has(item.id), random),
+    .slice(0, REVIEW_SESSION_SIZE);
+  return shuffled(due, random).map((item) =>
+    buildQuestion(item, random() < 0.5 ? "kana-to-romaji" : "romaji-to-kana", false, random),
   );
 }
 
-export function statusOf(card: Card | undefined, now: Date): KanaStatus {
-  if (!card) return "new";
-  if (new Date(card.due).getTime() <= now.getTime()) return "due";
-  return card.stability >= STRONG_STABILITY_DAYS ? "strong" : "learning";
+export function findRow(script: Script, rowId: string): KanaRow | undefined {
+  return KANA_ROWS[script].find((row) => row.id === rowId);
+}
+
+export function buildSession(options: {
+  script: Script;
+  selection: KanaSelection;
+  cards: ReadonlyMap<string, Card>;
+  now: Date;
+  random?: () => number;
+}): KanaQuestion[] {
+  const { script, selection, cards, now, random = Math.random } = options;
+  if (selection.mode === "all") return buildAllSession(script, cards, random);
+  if (selection.mode === "review") return buildReviewSession(script, cards, now, random);
+  const row = findRow(script, selection.rowId);
+  return row ? buildRowSession(row, cards, random) : [];
 }
 
 export function buildSummary(script: Script, cards: ReadonlyMap<string, Card>, now: Date) {
-  const items = KANA[script].map((item) => ({
-    kana: item.kana,
-    romaji: item.romaji,
-    group: item.group,
-    status: statusOf(cards.get(item.id), now),
+  const rows = KANA_ROWS[script].map((row) => ({
+    id: row.id,
+    group: row.group,
+    items: row.items.map((item) => ({
+      kana: item.kana,
+      romaji: item.romaji,
+      status: statusOf(cards.get(item.id), now),
+    })),
   }));
-  const count = (status: KanaStatus) => items.filter((item) => item.status === status).length;
+  const items = rows.flatMap((row) => row.items);
+  const count = (status: string) => items.filter((item) => item.status === status).length;
   return {
     script,
     total: items.length,
     seen: items.length - count("new"),
     due: count("due"),
     strong: count("strong"),
-    items,
+    // The first row with a character not yet studied, offered as the next thing to learn.
+    nextRowId: rows.find((row) => row.items.some((item) => item.status === "new"))?.id ?? null,
+    rows,
   };
 }

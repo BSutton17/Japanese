@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { KanaTab } from "./kana/KanaTab";
 import { Login } from "./Login";
+import { VocabTab } from "./vocab/VocabTab";
 
 type AuthState =
   | { kind: "loading" }
@@ -9,11 +10,18 @@ type AuthState =
   | { kind: "signed-in"; email: string }
   | { kind: "error"; message: string };
 
-const TABS = ["Talk", "Vocab", "Kana", "Progress"];
-const ACTIVE_TAB = "Kana";
+const TABS = [
+  { name: "Talk", ready: false },
+  { name: "Vocab", ready: true },
+  { name: "Kana", ready: true },
+  { name: "Progress", ready: false },
+] as const;
+
+type ReadyTab = "Vocab" | "Kana";
 
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: "loading" });
+  const [activeTab, setActiveTab] = useState<ReadyTab>("Kana");
 
   useEffect(() => {
     let active = true;
@@ -47,14 +55,21 @@ export function App() {
         <button className="link" onClick={signOut}>Sign out</button>
       </header>
       <main className="content">
-        <KanaTab />
+        {activeTab === "Kana" ? <KanaTab /> : <VocabTab />}
       </main>
       <nav className="tabs" aria-label="Sections">
         {TABS.map((tab) =>
-          tab === ACTIVE_TAB ? (
-            <span key={tab} className="tab tab-active" aria-current="page">{tab}</span>
+          tab.ready ? (
+            <button
+              key={tab.name}
+              className={tab.name === activeTab ? "tab tab-active" : "tab"}
+              aria-current={tab.name === activeTab ? "page" : undefined}
+              onClick={() => setActiveTab(tab.name)}
+            >
+              {tab.name}
+            </button>
           ) : (
-            <span key={tab} className="tab tab-soon" aria-disabled="true">{tab}<small>Soon</small></span>
+            <span key={tab.name} className="tab tab-soon" aria-disabled="true">{tab.name}<small>Soon</small></span>
           ),
         )}
       </nav>

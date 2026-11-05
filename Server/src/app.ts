@@ -10,12 +10,16 @@ import {
   type GoogleIdentity,
 } from "./auth.js";
 import { KANA_BY_ID, isScript } from "./kana/data.js";
-import { applyReview, buildSession, buildSummary } from "./kana/session.js";
+import { buildSession as buildKanaSession, buildSummary as buildKanaSummary, findRow, type KanaSelection } from "./kana/session.js";
 import type { KanaStore } from "./kana/store.js";
+import { applyReview } from "./srs.js";
+import { WORDS_BY_ID, buildSession as buildVocabSession, buildSummary as buildVocabSummary } from "./vocab/session.js";
+import type { VocabStore } from "./vocab/store.js";
 
 export interface AppDeps {
   verifyGoogleToken(idToken: string): Promise<GoogleIdentity>;
   kanaStore: KanaStore;
+  vocabStore: VocabStore;
 }
 
 const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -29,7 +33,13 @@ async function readJson(c: Context): Promise<Record<string, unknown>> {
   }
 }
 
-export function createApp({ verifyGoogleToken, kanaStore }: AppDeps) {
+function parseKanaSelection(mode: string | undefined, rowId: string | undefined): KanaSelection | undefined {
+  if (mode === "all" || mode === "review") return { mode };
+  if (mode === "row" && rowId) return { mode, rowId };
+  return undefined;
+}
+
+export function createApp({ verifyGoogleToken, kanaStore, vocabStore }: AppDeps) {
   const app = new Hono().basePath("/api");
 
   app.onError((error, c) => {
@@ -84,17 +94,18 @@ export function createApp({ verifyGoogleToken, kanaStore }: AppDeps) {
   app.get("/kana/summary", async (c) => {
     const script = c.req.query("script");
     if (!isScript(script)) return c.json({ error: "Unknown script." }, 400);
-    return c.json(buildSummary(script, await kanaStore.getCards(script), new Date()));
+    return c.json(buildKanaSummary(script, await kanaStore.getCards(script), new Date()));
   });
 
   app.get("/kana/session", async (c) => {
     const script = c.req.query("script");
     if (!isScript(script)) return c.json({ error: "Unknown script." }, 400);
-    const [cards, recentAccuracy] = await Promise.all([
-      kanaStore.getCards(script),
-      kanaStore.recentAccuracy(script),
-    ]);
-    return c.json({ questions: buildSession({ script, cards, recentAccuracy, now: new Date() }) });
+    const selection = parseKanaSelection(c.req.query("mode"), c.req.query("row"));
+    if (!selection || (selection.mode === "row" && !findRow(script, selection.rowId))) {
+      return c.json({ error: "Unknown session type." }, 400);
+    }
+    const cards = await kanaStore.getCards(script);
+    return c.json({ questions: buildKanaSession({ script, selection, cards, now: new Date() }) });
   });
 
   app.post("/kana/reviews", async (c) => {
@@ -106,6 +117,32 @@ export function createApp({ verifyGoogleToken, kanaStore }: AppDeps) {
     const now = new Date();
     const card = applyReview(await kanaStore.getCard(item.id), correct, now);
     await kanaStore.saveReview({ item, card, correct, at: now, localDate });
+    return c.json({ ok: true });
+  });
+
+  app.use("/vocab/*", requireSession);
+
+  app.get("/vocab/summary", async (c) => {
+    const [cards, recentAccuracy] = await Promise.all([vocabStore.getCards(), vocabStore.recentAccuracy()]);
+    return c.json(buildVocabSummary(cards, recentAccuracy, new Date()));
+  });
+
+  app.get("/vocab/session", async (c) => {
+    const type = c.req.query("type");
+    if (type !== "new" && type !== "review") return c.json({ error: "Unknown session type." }, 400);
+    const [cards, recentAccuracy] = await Promise.all([vocabStore.getCards(), vocabStore.recentAccuracy()]);
+    return c.json({ questions: buildVocabSession({ type, cards, recentAccuracy, now: new Date() }) });
+  });
+
+  app.post("/vocab/reviews", async (c) => {
+    const { wordId, correct, localDate } = await readJson(c);
+    const word = typeof wordId === "string" ? WORDS_BY_ID.get(wordId) : undefined;
+    if (!word || typeof correct !== "boolean" || typeof localDate !== "string" || !LOCAL_DATE.test(localDate)) {
+      return c.json({ error: "Invalid review." }, 400);
+    }
+    const now = new Date();
+    const card = applyReview(await vocabStore.getCard(word.id), correct, now);
+    await vocabStore.saveReview({ word, card, correct, at: now, localDate });
     return c.json({ ok: true });
   });
 

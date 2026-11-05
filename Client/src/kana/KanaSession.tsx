@@ -1,91 +1,39 @@
-import { useEffect, useRef, useState } from "react";
 import { api, type KanaQuestion } from "../api";
-
-export interface SessionResult {
-  total: number;
-  missed: KanaQuestion[];
-  unsaved: number;
-}
+import { useQuiz, type QuizResult } from "../quiz/useQuiz";
 
 const CORRECT_PAUSE_MS = 650;
 
 export function KanaSession(props: {
   questions: KanaQuestion[];
-  onFinish(result: SessionResult): void;
+  onFinish(result: QuizResult<KanaQuestion>): void;
   onQuit(): void;
 }) {
   const { questions, onFinish, onQuit } = props;
-  // Missed characters come back once at the end of the session.
-  const [queue, setQueue] = useState(questions);
-  const [index, setIndex] = useState(0);
-  const [picked, setPicked] = useState<string>();
-  const [taught, setTaught] = useState<ReadonlySet<string>>(new Set());
-  const [finishing, setFinishing] = useState(false);
-
-  const missed = useRef(new Map<string, KanaQuestion>());
-  const pendingSaves = useRef<Promise<boolean>[]>([]);
-
-  const question = queue[index];
-
-  const advance = () => {
-    setPicked(undefined);
-    if (index + 1 < queue.length) {
-      setIndex(index + 1);
-      return;
-    }
-    setFinishing(true);
-    void Promise.all(pendingSaves.current).then((saves) => {
-      onFinish({
-        total: questions.length,
-        missed: [...missed.current.values()],
-        unsaved: saves.filter((saved) => !saved).length,
-      });
-    });
-  };
-
-  const isCorrect = picked !== undefined && picked === question?.answer;
-
-  useEffect(() => {
-    if (!isCorrect) return;
-    const timer = setTimeout(advance, CORRECT_PAUSE_MS);
-    return () => clearTimeout(timer);
+  const quiz = useQuiz({
+    questions,
+    save: api.saveKanaReview,
+    onFinish,
+    correctPauseMs: CORRECT_PAUSE_MS,
   });
+  const { question, picked, isCorrect } = quiz;
 
-  if (!question || finishing) return <p className="center muted">Saving your progress…</p>;
-
-  const pick = (option: string) => {
-    if (picked !== undefined) return;
-    setPicked(option);
-    const correct = option === question.answer;
-    pendingSaves.current.push(
-      api.saveKanaReview(question.itemId, correct).then(
-        () => true,
-        () => false,
-      ),
-    );
-    if (!correct && !missed.current.has(question.itemId)) {
-      missed.current.set(question.itemId, question);
-      setQueue((current) => [...current, { ...question, isNew: false }]);
-    }
-  };
+  if (!question || quiz.finishing) return <p className="center muted">Saving your progress…</p>;
 
   const progress = (
     <div className="session-top">
       <button className="link" onClick={onQuit}>Quit</button>
-      <span className="muted" aria-label={`Question ${index + 1} of ${queue.length}`}>{index + 1} / {queue.length}</span>
+      <span className="muted" aria-label={`Question ${quiz.index + 1} of ${quiz.length}`}>{quiz.index + 1} / {quiz.length}</span>
     </div>
   );
 
-  if (question.isNew && !taught.has(question.itemId)) {
+  if (quiz.needsTeaching) {
     return (
       <section className="stack session">
         {progress}
         <p className="eyebrow">New character</p>
         <p className="prompt" lang="ja">{question.kana}</p>
         <p className="teach-reading">{question.romaji}</p>
-        <button className="primary" onClick={() => setTaught(new Set(taught).add(question.itemId))}>
-          Got it
-        </button>
+        <button className="primary" onClick={quiz.markTaught}>Got it</button>
       </section>
     );
   }
@@ -108,7 +56,7 @@ export function KanaSession(props: {
               key={option}
               className={`option${asksReading ? "" : " option-kana"}${state}`}
               lang={asksReading ? "en" : "ja"}
-              onClick={() => pick(option)}
+              onClick={() => quiz.pick(option)}
               disabled={picked !== undefined}
             >
               {option}
@@ -123,9 +71,9 @@ export function KanaSession(props: {
           <>
             <p className="wrong-text">
               <span lang="ja">{question.kana}</span> is read <strong>{question.romaji}</strong>.
-              {index < questions.length && " It'll come back at the end."}
+              {quiz.comesBack && " It'll come back at the end."}
             </p>
-            <button className="primary" onClick={advance}>Next</button>
+            <button className="primary" onClick={quiz.advance}>Next</button>
           </>
         )}
       </div>

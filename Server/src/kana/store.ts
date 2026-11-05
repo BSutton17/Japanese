@@ -13,7 +13,6 @@ export interface KanaReview {
 export interface KanaStore {
   getCards(script: Script): Promise<Map<string, Card>>;
   getCard(itemId: string): Promise<Card | undefined>;
-  recentAccuracy(script: Script): Promise<number | undefined>;
   saveReview(review: KanaReview): Promise<void>;
 }
 
@@ -32,10 +31,6 @@ interface ReviewDoc {
   localDate: string;
 }
 
-const RECENT_REVIEW_COUNT = 30;
-// Too few answers say little about how a session should be paced.
-const MIN_REVIEWS_FOR_ACCURACY = 10;
-
 export const mongoKanaStore: KanaStore = {
   async getCards(script) {
     const db = await getDb();
@@ -47,18 +42,6 @@ export const mongoKanaStore: KanaStore = {
     const db = await getDb();
     const doc = await db.collection<CardDoc>("kanaCards").findOne({ _id: itemId });
     return doc?.card;
-  },
-
-  async recentAccuracy(script) {
-    const db = await getDb();
-    const recent = await db
-      .collection<ReviewDoc>("reviews")
-      .find({ kind: "kana", script })
-      .sort({ at: -1 })
-      .limit(RECENT_REVIEW_COUNT)
-      .toArray();
-    if (recent.length < MIN_REVIEWS_FOR_ACCURACY) return undefined;
-    return recent.filter((review) => review.correct).length / recent.length;
   },
 
   async saveReview({ item, card, correct, at, localDate }) {
