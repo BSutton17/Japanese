@@ -129,6 +129,23 @@ describe("auth", () => {
     expect((await me({ Cookie: `session=${forged}` })).status).toBe(401);
   });
 
+  it("renews a long-lasting session each time the app opens", async () => {
+    const { app, signIn } = setup();
+    const cookie = await signIn();
+    const response = await app.request("/api/auth/me", { headers: { Cookie: cookie } });
+    const renewed = response.headers.get("set-cookie") ?? "";
+    expect(renewed).toMatch(/^session=/);
+    expect(renewed).toMatch(/Max-Age=2592000/);
+    expect(renewed).toMatch(/HttpOnly/i);
+  });
+
+  it("doesn't renew an invalid session", async () => {
+    const { app } = setup();
+    const response = await app.request("/api/auth/me", { headers: { Cookie: "session=nonsense" } });
+    expect(response.status).toBe(401);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("drops a session once its email is no longer allowed", async () => {
     const { app, signIn } = setup();
     const cookie = await signIn();

@@ -230,3 +230,14 @@ rt { font-size: 0.5em; font-weight: 400; color: var(--muted); }
 .scale { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 0.75rem; color: var(--muted); }
 .scale i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
 .scale .scale-gap { margin-left: 10px; }
+
+/* Settings */
+.topbar-actions { display: flex; gap: 16px; }
+.settings { width: min(420px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); }
+.settings[open] { display: flex; flex-direction: column; gap: 14px; }
+.settings::backdrop { background: rgb(0 0 0 / 0.5); }
+.settings h2 { font-size: 1.2rem; }
+.setting-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 44px; cursor: pointer; }
+.setting-row span { display: flex; flex-direction: column; gap: 2px; }
+.setting-row small { color: var(--muted); font-size: 0.85rem; line-height: 1.35; }
+.setting-row input { width: 24px; height: 24px; flex: none; accent-color: var(--accent); }

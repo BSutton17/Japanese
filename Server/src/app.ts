@@ -42,6 +42,16 @@ function parseKanaSelection(mode: string | undefined, rowId: string | undefined)
   return undefined;
 }
 
+async function startSession(c: Context, email: string): Promise<void> {
+  setCookie(c, SESSION_COOKIE, await createSession(email), {
+    httpOnly: true,
+    secure: Boolean(process.env.VERCEL),
+    sameSite: "Lax",
+    path: "/",
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  });
+}
+
 /** The learner's date from their device, since the server's clock may be in another time zone. */
 function todayFrom(value: string | undefined, now: Date): string {
   return value && LOCAL_DATE.test(value) ? value : now.toISOString().slice(0, 10);
@@ -87,13 +97,7 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
       return c.json({ error: "This Google account isn't allowed to use this app." }, 403);
     }
 
-    setCookie(c, SESSION_COOKIE, await createSession(identity.email), {
-      httpOnly: true,
-      secure: Boolean(process.env.VERCEL),
-      sameSite: "Lax",
-      path: "/",
-      maxAge: SESSION_MAX_AGE_SECONDS,
-    });
+    await startSession(c, identity.email);
     return c.json({ email: identity.email });
   });
 
@@ -105,7 +109,10 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
   app.get("/auth/me", async (c) => {
     const token = getCookie(c, SESSION_COOKIE);
     const email = token ? await readSession(token) : undefined;
-    return email ? c.json({ email }) : c.json({ error: "Not signed in." }, 401);
+    if (!email) return c.json({ error: "Not signed in." }, 401);
+    // The app asks this each time it opens, so regular use keeps pushing the expiry back.
+    await startSession(c, email);
+    return c.json({ email });
   });
 
   app.use("/kana/*", requireSession);

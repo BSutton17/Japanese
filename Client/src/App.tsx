@@ -3,6 +3,7 @@ import { ApiError, api } from "./api";
 import { KanaTab } from "./kana/KanaTab";
 import { Login } from "./Login";
 import { ProgressTab } from "./progress/ProgressTab";
+import { SettingsPanel } from "./SettingsPanel";
 import { VocabTab } from "./vocab/VocabTab";
 
 type AuthState =
@@ -23,6 +24,7 @@ type ReadyTab = "Vocab" | "Kana" | "Progress";
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: "loading" });
   const [activeTab, setActiveTab] = useState<ReadyTab>("Kana");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -53,8 +55,12 @@ export function App() {
     <div className="shell">
       <header className="topbar">
         <span className="brand">日本語 Tutor</span>
-        <button className="link" onClick={signOut}>Sign out</button>
+        <div className="topbar-actions">
+          <button className="link" onClick={() => setSettingsOpen(true)}>Settings</button>
+          <button className="link" onClick={signOut}>Sign out</button>
+        </div>
       </header>
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
       <main className="content">
         {activeTab === "Kana" && <KanaTab />}
         {activeTab === "Vocab" && <VocabTab />}

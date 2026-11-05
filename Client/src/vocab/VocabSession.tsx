@@ -1,5 +1,8 @@
+import { useEffect } from "react";
 import { api, type VocabQuestion } from "../api";
 import { useQuiz, type QuizResult } from "../quiz/useQuiz";
+import { getSettings } from "../settings";
+import { speakJapanese, stopSpeaking } from "../speech";
 import { FuriganaText, WordWithReading } from "./JapaneseText";
 
 const CORRECT_PAUSE_MS = 900;
@@ -15,7 +18,10 @@ export function VocabSession(props: {
     save: api.saveVocabReview,
     onFinish,
     correctPauseMs: CORRECT_PAUSE_MS,
+    // The reading rather than the written word, because a device's voice can guess a kanji wrong.
+    onAnswered: (answered) => (getSettings().readAloud ? speakJapanese(answered.reading) : undefined),
   });
+  useEffect(() => stopSpeaking, []);
   const { question, picked, isCorrect } = quiz;
 
   if (!question || quiz.finishing) return <p className="center muted">Saving your progress…</p>;

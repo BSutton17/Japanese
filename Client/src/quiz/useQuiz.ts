@@ -20,8 +20,10 @@ export function useQuiz<Q extends QuizItem>(options: {
   save(itemId: string, correct: boolean): Promise<unknown>;
   onFinish(result: QuizResult<Q>): void;
   correctPauseMs: number;
+  /** Runs on each answer. A right answer waits for what this returns before moving on. */
+  onAnswered?(question: Q, correct: boolean): Promise<unknown> | void;
 }) {
-  const { questions, save, onFinish, correctPauseMs } = options;
+  const { questions, save, onFinish, correctPauseMs, onAnswered } = options;
   const [queue, setQueue] = useState(questions);
   const [index, setIndex] = useState(0);
   const [picked, setPicked] = useState<string>();
@@ -32,6 +34,7 @@ export function useQuiz<Q extends QuizItem>(options: {
   const requeued = useRef(new Set<string>());
   const missed = useRef(new Map<string, Q>());
   const pendingSaves = useRef<Promise<boolean>[]>([]);
+  const answerEffect = useRef<Promise<unknown> | void>(undefined);
 
   const question = queue[index];
   const isOriginal = index < questions.length;
@@ -56,14 +59,21 @@ export function useQuiz<Q extends QuizItem>(options: {
 
   useEffect(() => {
     if (!isCorrect) return;
-    const timer = setTimeout(advance, correctPauseMs);
-    return () => clearTimeout(timer);
+    let active = true;
+    const timer = setTimeout(() => {
+      void Promise.resolve(answerEffect.current).then(() => active && advance());
+    }, correctPauseMs);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   });
 
   const pick = (option: string) => {
     if (picked !== undefined || !question) return;
     setPicked(option);
     const correct = option === question.answer;
+    answerEffect.current = onAnswered?.(question, correct);
     pendingSaves.current.push(
       save(question.itemId, correct).then(
         () => true,
