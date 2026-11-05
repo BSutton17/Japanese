@@ -5,6 +5,7 @@ export type TalkStatus = "idle" | "starting" | "connecting" | "listening" | "spe
 
 export interface TalkDiagnostics {
   mic: string;
+  micDetails: string;
   audio: string;
   wakeLock: string;
   connections: number;
@@ -47,6 +48,8 @@ const MAX_RECONNECT_ATTEMPTS = 6;
 const GO_AWAY_GRACE_MS = 5_000;
 // A new connection gets this much of the conversation back, when it can't resume.
 const HISTORY_TURNS = 30;
+// Gemini sometimes writes notes like "<no speech>" or "{pause}" into its transcript.
+const STAGE_DIRECTIONS = /<[^<>]*>|\{[^{}]*\}/g;
 
 function installedAsApp(): boolean {
   return window.matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
@@ -66,7 +69,7 @@ export class TalkEngine {
     turns: [],
     micLevel: 0,
     seconds: 0,
-    diagnostics: { mic: "off", audio: "off", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp() },
+    diagnostics: { mic: "off", micDetails: "off", audio: "off", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp() },
   };
   private context?: AudioContext;
   private mic?: MicCapture;
@@ -111,7 +114,7 @@ export class TalkEngine {
       seconds: 0,
       micLevel: 0,
       error: undefined,
-      diagnostics: { mic: "starting", audio: "starting", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp() },
+      diagnostics: { mic: "starting", micDetails: "off", audio: "starting", wakeLock: "off", connections: 0, drops: 0, tokens: 0, installed: installedAsApp() },
     });
 
     const context = new AudioContext();
@@ -128,7 +131,7 @@ export class TalkEngine {
       return;
     }
     if (this.stopped) return;
-    this.diagnose({ mic: "live", audio: context.state });
+    this.diagnose({ mic: "live", micDetails: this.mic.details, audio: context.state });
 
     void this.keepScreenOn();
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -249,8 +252,11 @@ export class TalkEngine {
   private addTranscript(role: TalkTurn["role"], text: string): void {
     const turns = [...this.state.turns];
     const last = turns.at(-1);
-    if (last?.role === role) turns[turns.length - 1] = { role, text: last.text + text };
-    else turns.push({ role, text: text.trimStart() });
+    const continuing = last?.role === role;
+    // Pieces arrive separately, so a direction can only be recognized once it's complete.
+    const merged = ((continuing ? last.text : "") + text).replace(STAGE_DIRECTIONS, "");
+    if (continuing) turns.pop();
+    if (merged.trim()) turns.push({ role, text: merged.trimStart() });
     this.update({ turns });
   }
 

@@ -95,6 +95,7 @@ export function TalkTab() {
           <summary>Connection details</summary>
           <dl>
             <div><dt>Microphone</dt><dd>{state.diagnostics.mic}</dd></div>
+            <div><dt>Mic audio</dt><dd>{state.diagnostics.micDetails}</dd></div>
             <div><dt>Audio</dt><dd>{state.diagnostics.audio}</dd></div>
             <div><dt>Screen stays on</dt><dd>{state.diagnostics.wakeLock}</dd></div>
             <div><dt>Connections</dt><dd>{state.diagnostics.connections}</dd></div>

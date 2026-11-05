@@ -71,6 +71,14 @@ export class MicCapture {
     return this.stream?.getAudioTracks().some((track) => track.readyState === "live") ?? false;
   }
 
+  /** What the device actually gave us, since browsers can quietly ignore what was asked for. */
+  get details(): string {
+    const settings = this.stream?.getAudioTracks()[0]?.getSettings();
+    if (!settings) return "off";
+    const cleanup = [settings.echoCancellation && "echo", settings.noiseSuppression && "noise", settings.autoGainControl && "volume"].filter(Boolean);
+    return `${this.context.sampleRate} Hz, cleaning ${cleanup.length ? cleanup.join(", ") : "nothing"}`;
+  }
+
   async start(): Promise<void> {
     this.stop();
     this.stream = await navigator.mediaDevices.getUserMedia({

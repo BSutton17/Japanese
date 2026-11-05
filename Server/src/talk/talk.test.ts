@@ -10,8 +10,17 @@ const instructions = (overrides: Partial<Parameters<typeof buildTutorInstruction
   buildTutorInstructions({ ability: 0, levelName: null, nextLevel: "N5", easingBack: false, cards: new Map(), ...overrides });
 
 describe("tutor instructions", () => {
-  it("asks for a Tokyo accent", () => {
-    expect(instructions()).toMatch(/Tokyo accent/);
+  it("gives her a Japanese accent in both languages, starting with that rule", () => {
+    const text = instructions();
+    expect(text.startsWith("# Your voice")).toBe(true);
+    expect(text).toMatch(/Tokyo pronunciation and pitch accent/);
+    expect(text).toMatch(/ALWAYS with an obvious Japanese accent, and never an American one/);
+    expect(text).not.toMatch(/natural American English/);
+  });
+
+  it("keeps her to Japanese and English, even if the learner's accent sounds like something else", () => {
+    expect(instructions()).toMatch(/such as Spanish, it's their accent/);
+    expect(instructions()).toMatch(/Never reply in any other language/);
   });
 
   it("uses mostly English for a beginner and mostly Japanese later", () => {

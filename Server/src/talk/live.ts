@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { EndSensitivity, GoogleGenAI, Modality, StartSensitivity } from "@google/genai";
 import { requireEnv } from "../env.js";
 
 export const LIVE_MODEL = "gemini-3.8-live";
@@ -7,6 +7,11 @@ export const LIVE_API_VERSION = "v1alpha";
 const VOICE = "Kore";
 const TOKEN_LIFETIME_MS = 30 * 60 * 1000;
 const TOKEN_START_WINDOW_MS = 60 * 1000;
+// Listed in this order on purpose. Japanese spoken with an American accent came back as Spanish,
+// German or English when English was listed first or the language was left automatic.
+const SPOKEN_LANGUAGES = ["ja-JP", "en-US"];
+// Long enough for a learner to stop and think mid-sentence without being answered too early.
+const END_OF_TURN_SILENCE_MS = 1500;
 
 export interface LiveTokenRequest {
   instructions: string;
@@ -33,8 +38,15 @@ export async function createLiveToken({ instructions, handle, seedHistory }: Liv
     responseModalities: [Modality.AUDIO],
     systemInstruction: instructions,
     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE } } },
-    inputAudioTranscription: {},
+    inputAudioTranscription: { languageCodes: SPOKEN_LANGUAGES },
     outputAudioTranscription: {},
+    realtimeInputConfig: {
+      automaticActivityDetection: {
+        startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_LOW,
+        endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW,
+        silenceDurationMs: END_OF_TURN_SILENCE_MS,
+      },
+    },
     contextWindowCompression: { slidingWindow: {} },
     sessionResumption: handle ? { handle } : {},
     ...(seedHistory ? { historyConfig: { initialHistoryInClientContent: true } } : {}),
