@@ -13,6 +13,20 @@ interface PeakDoc {
   at: Date;
 }
 
+/** Combines graded answers with talk days, so a day of only talking still counts as practice. */
+export function mergeActivity(
+  graded: readonly DayActivity[],
+  talk: readonly { date: string; spoken: number }[],
+): DayActivity[] {
+  const days = new Map(graded.map((day) => [day.date, { ...day }]));
+  for (const { date, spoken } of talk) {
+    const day = days.get(date);
+    if (day) day.spoken = spoken;
+    else days.set(date, { date, answers: 0, correct: 0, spoken });
+  }
+  return [...days.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export const mongoProgressStore: ProgressStore = {
   async getActivity() {
     const db = await getDb();
@@ -29,7 +43,14 @@ export const mongoProgressStore: ProgressStore = {
         { $sort: { _id: 1 } },
       ])
       .toArray();
-    return days.map((day) => ({ date: day._id, answers: day.answers, correct: day.correct }));
+    const talk = await db
+      .collection("talkSessions")
+      .aggregate<{ _id: string; spoken: number }>([{ $group: { _id: "$localDate", spoken: { $sum: "$learnerTurns" } } }])
+      .toArray();
+    return mergeActivity(
+      days.map((day) => ({ date: day._id, answers: day.answers, correct: day.correct })),
+      talk.map((day) => ({ date: day._id, spoken: day.spoken })),
+    );
   },
 
   async getPeak() {

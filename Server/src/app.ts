@@ -15,6 +15,9 @@ import type { KanaStore } from "./kana/store.js";
 import { buildCalendar, buildProgress, computeStreak, describeAbility } from "./progress/progress.js";
 import type { ProgressStore } from "./progress/store.js";
 import { applyReview } from "./srs.js";
+import type { LiveToken, LiveTokenRequest } from "./talk/live.js";
+import { GREETING_PROMPT, buildTutorInstructions } from "./talk/prompt.js";
+import type { TalkStore, TalkTurn } from "./talk/store.js";
 import { WORDS_BY_ID, buildSession as buildVocabSession, buildSummary as buildVocabSummary } from "./vocab/session.js";
 import type { VocabStore } from "./vocab/store.js";
 
@@ -23,9 +26,25 @@ export interface AppDeps {
   kanaStore: KanaStore;
   vocabStore: VocabStore;
   progressStore: ProgressStore;
+  talkStore: TalkStore;
+  createLiveToken(request: LiveTokenRequest): Promise<LiveToken>;
 }
 
 const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const SESSION_ID = /^[\w-]{8,64}$/;
+const MAX_HANDLE_LENGTH = 4096;
+const MAX_TURNS = 3000;
+const MAX_TURN_LENGTH = 5000;
+
+function parseTurns(value: unknown): TalkTurn[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_TURNS) return undefined;
+  const turns: TalkTurn[] = [];
+  for (const turn of value as { role?: unknown; text?: unknown }[]) {
+    if ((turn?.role !== "learner" && turn?.role !== "tutor") || typeof turn.text !== "string") return undefined;
+    turns.push({ role: turn.role, text: turn.text.slice(0, MAX_TURN_LENGTH) });
+  }
+  return turns;
+}
 
 async function readJson(c: Context): Promise<Record<string, unknown>> {
   try {
@@ -57,7 +76,7 @@ function todayFrom(value: string | undefined, now: Date): string {
   return value && LOCAL_DATE.test(value) ? value : now.toISOString().slice(0, 10);
 }
 
-export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressStore }: AppDeps) {
+export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressStore, talkStore, createLiveToken }: AppDeps) {
   const app = new Hono().basePath("/api");
 
   const loadVocabProgress = async (today: string, now: Date) => {
@@ -179,6 +198,54 @@ export function createApp({ verifyGoogleToken, kanaStore, vocabStore, progressSt
     const now = new Date();
     const card = applyReview(await vocabStore.getCard(word.id), correct, now);
     await vocabStore.saveReview({ word, card, correct, at: now, localDate });
+    return c.json({ ok: true });
+  });
+
+  app.use("/talk/*", requireSession);
+
+  app.post("/talk/token", async (c) => {
+    const { handle, seedHistory, today } = await readJson(c);
+    if (handle !== undefined && (typeof handle !== "string" || handle.length > MAX_HANDLE_LENGTH)) {
+      return c.json({ error: "Invalid handle." }, 400);
+    }
+    const now = new Date();
+    const { cards, progress } = await loadVocabProgress(todayFrom(typeof today === "string" ? today : undefined, now), now);
+    const level = describeAbility(progress.ability);
+    const instructions = buildTutorInstructions({
+      ability: progress.ability,
+      levelName: level.reached,
+      nextLevel: level.next,
+      easingBack: progress.comeback.active,
+      cards,
+    });
+    try {
+      const token = await createLiveToken({ instructions, handle, seedHistory: seedHistory === true });
+      return c.json({ ...token, greeting: GREETING_PROMPT });
+    } catch (error) {
+      console.error("Couldn't create a Gemini token:", error);
+      return c.json({ error: "The tutor isn't available right now." }, 503);
+    }
+  });
+
+  app.put("/talk/sessions/:id", async (c) => {
+    const id = c.req.param("id");
+    const { localDate, startedAt, seconds, tokens, turns } = await readJson(c);
+    const parsedTurns = parseTurns(turns);
+    const started = new Date(typeof startedAt === "string" ? startedAt : NaN);
+    if (
+      !SESSION_ID.test(id) ||
+      !parsedTurns ||
+      typeof localDate !== "string" ||
+      !LOCAL_DATE.test(localDate) ||
+      Number.isNaN(started.getTime()) ||
+      typeof seconds !== "number" ||
+      seconds < 0 ||
+      typeof tokens !== "number" ||
+      tokens < 0
+    ) {
+      return c.json({ error: "Invalid session." }, 400);
+    }
+    await talkStore.saveSession({ id, localDate, startedAt: started, updatedAt: new Date(), seconds, tokens, turns: parsedTurns });
     return c.json({ ok: true });
   });
 

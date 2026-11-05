@@ -241,3 +241,17 @@ rt { font-size: 0.5em; font-weight: 400; color: var(--muted); }
 .setting-row span { display: flex; flex-direction: column; gap: 2px; }
 .setting-row small { color: var(--muted); font-size: 0.85rem; line-height: 1.35; }
 .setting-row input { width: 24px; height: 24px; flex: none; accent-color: var(--accent); }
+
+/* Talk */
+.talk-card { text-align: center; }
+.talk-status { font-size: 1.35rem; font-weight: 600; }
+.talk-time { font-size: 2.6rem; font-weight: 700; line-height: 1.1; }
+.transcript { display: flex; flex-direction: column; gap: 10px; }
+.turn { display: flex; flex-direction: column; gap: 2px; max-width: 90%; line-height: 1.45; overflow-wrap: anywhere; }
+.turn-who { font-size: 0.75rem; color: var(--muted); }
+.turn-learner { align-self: flex-end; text-align: right; }
+.diagnostics { font-size: 0.85rem; color: var(--muted); }
+.diagnostics summary { cursor: pointer; min-height: 32px; }
+.diagnostics dl { display: grid; gap: 4px; margin-top: 6px; }
+.diagnostics dl div { display: flex; justify-content: space-between; gap: 12px; }
+.diagnostics dd { color: var(--ink); }

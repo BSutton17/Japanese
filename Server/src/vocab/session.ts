@@ -209,6 +209,14 @@ function currentLevelIndex(cards: ReadonlyMap<string, Card>): number {
   return index === -1 ? LEVELS.length - 1 : index;
 }
 
+/** The next words to learn, most common first, from the levels the learner has unlocked. */
+export function nextNewWords(cards: ReadonlyMap<string, Card>, count: number): Word[] {
+  // A level beyond the current one can join in, but no further, so a common word from a much
+  // harder level can't arrive too early.
+  const unlocked = new Set(LEVELS.slice(0, currentLevelIndex(cards) + 2));
+  return WORDS.filter((word) => !cards.has(word.id) && unlocked.has(word.level)).slice(0, count);
+}
+
 export function buildSession(options: {
   type: VocabSessionType;
   cards: ReadonlyMap<string, Card>;
@@ -238,13 +246,8 @@ export function buildSession(options: {
     );
   }
 
-  // New words only, most common first. A level beyond the current one can join in, but no further,
-  // so a common word from a much harder level can't arrive too early.
-  const unlocked = new Set(LEVELS.slice(0, currentLevelIndex(cards) + 2));
-  const batch = WORDS.filter((word) => !cards.has(word.id) && unlocked.has(word.level)).slice(
-    0,
-    newBatchSize(recentAccuracy, countDue(cards, now), easingBack),
-  );
+  // New words only, with nothing older mixed in.
+  const batch = nextNewWords(cards, newBatchSize(recentAccuracy, countDue(cards, now), easingBack));
   // A new word is read first, since recognizing it is easier than recalling it.
   return buildLinkedQuestions(batch, () => "ja-to-en", true, cards, ability, random);
 }

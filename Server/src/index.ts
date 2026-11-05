@@ -2,6 +2,8 @@ import { createApp } from "./app.js";
 import { verifyGoogleToken } from "./auth.js";
 import { mongoKanaStore } from "./kana/store.js";
 import { mongoProgressStore } from "./progress/store.js";
+import { createLiveToken } from "./talk/live.js";
+import { mongoTalkStore } from "./talk/store.js";
 import { mongoVocabStore } from "./vocab/store.js";
 
 export const app = createApp({
@@ -9,4 +11,6 @@ export const app = createApp({
   kanaStore: mongoKanaStore,
   vocabStore: mongoVocabStore,
   progressStore: mongoProgressStore,
+  talkStore: mongoTalkStore,
+  createLiveToken,
 });

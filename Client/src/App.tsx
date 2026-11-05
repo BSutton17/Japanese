@@ -4,6 +4,7 @@ import { KanaTab } from "./kana/KanaTab";
 import { Login } from "./Login";
 import { ProgressTab } from "./progress/ProgressTab";
 import { SettingsPanel } from "./SettingsPanel";
+import { TalkTab } from "./talk/TalkTab";
 import { VocabTab } from "./vocab/VocabTab";
 
 type AuthState =
@@ -13,13 +14,13 @@ type AuthState =
   | { kind: "error"; message: string };
 
 const TABS = [
-  { name: "Talk", ready: false },
+  { name: "Talk", ready: true },
   { name: "Vocab", ready: true },
   { name: "Kana", ready: true },
   { name: "Progress", ready: true },
 ] as const;
 
-type ReadyTab = "Vocab" | "Kana" | "Progress";
+type ReadyTab = "Talk" | "Vocab" | "Kana" | "Progress";
 
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: "loading" });
@@ -62,6 +63,10 @@ export function App() {
       </header>
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
       <main className="content">
+        {/* Stays mounted while hidden, so a conversation keeps going across tabs. */}
+        <div hidden={activeTab !== "Talk"}>
+          <TalkTab />
+        </div>
         {activeTab === "Kana" && <KanaTab />}
         {activeTab === "Vocab" && <VocabTab />}
         {activeTab === "Progress" && <ProgressTab />}

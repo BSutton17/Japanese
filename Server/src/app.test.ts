@@ -4,7 +4,9 @@ import { SignJWT } from "jose";
 import { createApp } from "./app.js";
 import type { KanaReview, KanaStore } from "./kana/store.js";
 import type { DayActivity } from "./progress/progress.js";
-import type { ProgressStore } from "./progress/store.js";
+import { mergeActivity, type ProgressStore } from "./progress/store.js";
+import type { LiveTokenRequest } from "./talk/live.js";
+import type { TalkSession } from "./talk/store.js";
 import type { VocabReview, VocabStore } from "./vocab/store.js";
 import { WORDS } from "./vocab/words.js";
 
@@ -57,10 +59,17 @@ function setup() {
   const fake = fakeStore();
   const vocab = fakeVocabStore();
   const progress = fakeProgressStore();
+  const talk = { saved: [] as TalkSession[], tokenRequests: [] as LiveTokenRequest[], failToken: false };
   const app = createApp({
     kanaStore: fake.store,
     vocabStore: vocab.store,
     progressStore: progress.store,
+    talkStore: { saveSession: async (session) => void talk.saved.push(session) },
+    createLiveToken: async (request) => {
+      talk.tokenRequests.push(request);
+      if (talk.failToken) throw new Error("no key");
+      return { token: "auth_tokens/test", model: "gemini-3.8-live", apiVersion: "v1alpha", config: { responseModalities: ["AUDIO"] } };
+    },
     verifyGoogleToken: async (token) => {
       if (token === "bad") throw new Error("invalid signature");
       if (token === "unverified") return { email: ALLOWED, emailVerified: false };
@@ -78,7 +87,7 @@ function setup() {
     const response = await post("/auth/google", { credential: "good" });
     return response.headers.get("set-cookie")!.split(";")[0]!;
   };
-  return { app, post, signIn, vocab, progress, ...fake };
+  return { app, post, signIn, vocab, progress, talk, ...fake };
 }
 
 beforeEach(() => {
@@ -306,5 +315,137 @@ describe("progress route", () => {
       peak: { reached: "N4", next: "N3" },
     });
     expect(progress.state.peak).toBe(2.5);
+  });
+});
+
+describe("talk routes", () => {
+  const session = {
+    localDate: "2026-11-04",
+    startedAt: "2026-11-04T12:00:00.000Z",
+    seconds: 95,
+    tokens: 1200,
+    turns: [
+      { role: "tutor", text: "こんにちは！" },
+      { role: "learner", text: "こんにちは" },
+    ],
+  };
+
+  it("require a session", async () => {
+    const { app, post } = setup();
+    expect((await post("/talk/token", {})).status).toBe(401);
+    expect((await app.request("/api/talk/sessions/abcdefgh", { method: "PUT", body: "{}" })).status).toBe(401);
+  });
+
+  it("create a token with instructions built from the learner's level", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const response = await post("/talk/token", { today: "2026-11-04" }, Cookie);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ token: "auth_tokens/test", model: "gemini-3.8-live" });
+    expect(talk.tokenRequests[0]?.instructions).toMatch(/below N5/);
+    expect(talk.tokenRequests[0]?.handle).toBeUndefined();
+  });
+
+  it("never send the API key or instructions outside the token's config", async () => {
+    process.env.GEMINI_API_KEY = "real-secret-value";
+    const { post, signIn } = setup();
+    const Cookie = await signIn();
+    const text = await (await post("/talk/token", {}, Cookie)).text();
+    expect(text).not.toContain("real-secret-value");
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  it("pass a resume handle and history request through", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    await post("/talk/token", { handle: "resume-me", seedHistory: true }, Cookie);
+    expect(talk.tokenRequests[0]).toMatchObject({ handle: "resume-me", seedHistory: true });
+  });
+
+  it("reject a bad handle", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    expect((await post("/talk/token", { handle: 5 }, Cookie)).status).toBe(400);
+    expect((await post("/talk/token", { handle: "x".repeat(5000) }, Cookie)).status).toBe(400);
+    expect(talk.tokenRequests).toHaveLength(0);
+  });
+
+  it("explain when Gemini can't be reached, without details", async () => {
+    const { post, signIn, talk } = setup();
+    const Cookie = await signIn();
+    talk.failToken = true;
+    const response = await post("/talk/token", {}, Cookie);
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain("no key");
+  });
+
+  it("save a conversation", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const response = await app.request("/api/talk/sessions/session-12345", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Cookie },
+      body: JSON.stringify(session),
+    });
+    expect(response.status).toBe(200);
+    expect(talk.saved[0]).toMatchObject({ id: "session-12345", seconds: 95, localDate: "2026-11-04" });
+    expect(talk.saved[0]?.turns).toHaveLength(2);
+  });
+
+  it("reject a malformed conversation", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    const put = (id: string, body: unknown) =>
+      app.request(`/api/talk/sessions/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Cookie },
+        body: JSON.stringify(body),
+      });
+    expect((await put("short", session)).status).toBe(400);
+    expect((await put("session-12345", { ...session, localDate: "soon" })).status).toBe(400);
+    expect((await put("session-12345", { ...session, startedAt: "never" })).status).toBe(400);
+    expect((await put("session-12345", { ...session, seconds: -1 })).status).toBe(400);
+    expect((await put("session-12345", { ...session, turns: [{ role: "system", text: "hi" }] })).status).toBe(400);
+    expect((await put("session-12345", { ...session, turns: "nope" })).status).toBe(400);
+    expect(talk.saved).toHaveLength(0);
+  });
+
+  it("cut off an oversized turn", async () => {
+    const { app, signIn, talk } = setup();
+    const Cookie = await signIn();
+    await app.request("/api/talk/sessions/session-12345", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Cookie },
+      body: JSON.stringify({ ...session, turns: [{ role: "learner", text: "あ".repeat(9000) }] }),
+    });
+    expect(talk.saved[0]?.turns[0]?.text).toHaveLength(5000);
+  });
+});
+
+describe("activity", () => {
+  it("counts a day of only talking", () => {
+    expect(mergeActivity([], [{ date: "2026-11-04", spoken: 7 }])).toEqual([
+      { date: "2026-11-04", answers: 0, correct: 0, spoken: 7 },
+    ]);
+  });
+
+  it("combines talking and answers on one day, in date order", () => {
+    const merged = mergeActivity(
+      [{ date: "2026-11-04", answers: 10, correct: 8 }, { date: "2026-11-01", answers: 5, correct: 5 }],
+      [{ date: "2026-11-04", spoken: 3 }, { date: "2026-11-02", spoken: 2 }],
+    );
+    expect(merged.map((day) => day.date)).toEqual(["2026-11-01", "2026-11-02", "2026-11-04"]);
+    expect(merged[2]).toEqual({ date: "2026-11-04", answers: 10, correct: 8, spoken: 3 });
+  });
+
+  it("keeps talking out of the right and wrong totals", async () => {
+    const { app, signIn, progress } = setup();
+    const Cookie = await signIn();
+    progress.state.activity = [{ date: "2026-11-04", answers: 0, correct: 0, spoken: 12 }];
+    const report = await app.request("/api/progress?today=2026-11-04", { headers: { Cookie } });
+    const body = (await report.json()) as { streak: { current: number }; today: { answers: number }; calendar: { answers: number }[] };
+    expect(body.streak.current).toBe(1);
+    expect(body.today.answers).toBe(0);
+    expect(body.calendar.at(-1)?.answers).toBe(12);
   });
 });

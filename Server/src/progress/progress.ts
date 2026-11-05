@@ -7,6 +7,8 @@ export interface DayActivity {
   date: string;
   answers: number;
   correct: number;
+  /** Things said in Talk. They count as practice, but aren't graded as right or wrong. */
+  spoken?: number;
 }
 
 const LEVELS: JlptLevel[] = ["N5", "N4", "N3", "N2", "N1"];
@@ -161,7 +163,7 @@ export function buildProgress(options: {
 }
 
 export function buildCalendar(activity: readonly DayActivity[], frozenDays: readonly string[], today: string) {
-  const answersByDate = new Map(activity.map((day) => [day.date, day.answers]));
+  const answersByDate = new Map(activity.map((day) => [day.date, day.answers + (day.spoken ?? 0)]));
   const frozen = new Set(frozenDays);
   const todayNumber = dayNumber(today);
   return Array.from({ length: CALENDAR_DAYS }, (_, index) => {

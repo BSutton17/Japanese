@@ -79,6 +79,27 @@ export interface ProgressReport {
   kana: { script: string; learned: number; total: number }[];
 }
 
+export interface TalkTurn {
+  role: "learner" | "tutor";
+  text: string;
+}
+
+export interface TalkToken {
+  token: string;
+  model: string;
+  apiVersion: string;
+  config: Record<string, unknown>;
+  greeting: string;
+}
+
+export interface TalkSessionSnapshot {
+  localDate: string;
+  startedAt: string;
+  seconds: number;
+  tokens: number;
+  turns: TalkTurn[];
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -103,7 +124,7 @@ function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 /** The learner's own calendar date, so streaks follow their days rather than UTC. */
-function localDate(): string {
+export function localDate(): string {
   return new Date().toLocaleDateString("en-CA");
 }
 
@@ -131,4 +152,9 @@ export const api = {
     post<{ ok: true }>("/vocab/reviews", { wordId, correct, localDate: localDate() }),
 
   progress: () => request<ProgressReport>(`/progress?today=${localDate()}`),
+
+  talkToken: (options: { handle?: string; seedHistory: boolean }) =>
+    post<TalkToken>("/talk/token", { ...options, today: localDate() }),
+  saveTalkSession: (id: string, snapshot: TalkSessionSnapshot) =>
+    request<{ ok: true }>(`/talk/sessions/${id}`, { method: "PUT", body: JSON.stringify(snapshot) }),
 };
