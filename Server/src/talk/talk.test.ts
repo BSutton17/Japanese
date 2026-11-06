@@ -27,9 +27,7 @@ describe("tutor instructions", () => {
   it("converses in Japanese at every level, keeping English for teaching, correcting, and asking", () => {
     for (const ability of [0, 1.5, 2.5, 3.5]) {
       const text = instructions({ ability });
-      expect(text).toMatch(/Reply in Japanese by default/);
-      expect(text).toMatch(/never answer Japanese with an English reply/);
-      expect(text).toMatch(/Use English ONLY to teach a new word or grammar point, to correct a mistake/);
+      expect(text).toMatch(/Reply in Japanese, and never answer real conversation with an English reply/);
       expect(text).not.toMatch(/Speak mostly English/);
     }
   });
@@ -39,7 +37,32 @@ describe("tutor instructions", () => {
     expect(text).toMatch(/Answer in English\. The only Japanese in your answer is what they asked for/);
     expect(text).toMatch(/start in Japanese and finish with a question in English, answer in English/);
     expect(text).toMatch(/Don't add a Japanese reaction before it, or a Japanese question or translation after it/);
-    expect(text).not.toMatch(/then go back to Japanese\./);
+    expect(text).not.toMatch(/The end of what they said decides/);
+  });
+
+  it("works out for itself whether they're being tutored or talking", () => {
+    const text = instructions();
+    expect(text).toMatch(/decide what they're trying to do, not just which language they used/);
+    expect(text).toMatch(/You choose by yourself\. Never ask which they want/);
+  });
+
+  it("gives a verdict when they try something out, instead of replying to it", () => {
+    const text = instructions();
+    expect(text).toMatch(/so to say X, I should say Y/);
+    expect(text).toMatch(/never reply to it as if they were saying it to you/);
+    expect(text).toMatch(/say first and plainly whether it's right, almost right, or wrong/);
+  });
+
+  it("waits through a pause, and treats the Japanese after it as their attempt", () => {
+    const text = instructions();
+    expect(text).toMatch(/stay completely silent and wait/);
+    expect(text).toMatch(/Never give the answer or judge it before they've tried/);
+    expect(text).toMatch(/is their attempt, even after a long pause/);
+  });
+
+  it("corrects first, then responds, in conversation", () => {
+    expect(instructions()).toMatch(/first saying the correct version in a few words.*Then respond to what they meant, in Japanese/);
+    expect(instructions()).toMatch(/Don't just quietly use the right form/);
   });
 
   it("makes her Japanese harder as the level rises", () => {
